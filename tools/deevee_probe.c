@@ -533,6 +533,35 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      render_probe.nav_dsi_packets);
                printf("  vts_menu_render_first_subpicture_stream_id: 0x%02x\n",
                      render_probe.first_subpicture_stream_id);
+               printf("  vts_menu_render_starting_button: %u\n",
+                     render_probe.starting_button);
+               printf("  vts_menu_render_forced_select_button: %u\n",
+                     render_probe.forced_select_button);
+               printf("  vts_menu_render_forced_action_button: %u\n",
+                     render_probe.forced_action_button);
+               printf("  vts_menu_render_button_count: %u\n",
+                     render_probe.button_count);
+               if (render_probe.button_count)
+               {
+                  const struct deevee_dvd_menu_button *button =
+                     &render_probe.buttons[0];
+
+                  printf("  vts_menu_render_button_1_rect: %u,%u-%u,%u\n",
+                        button->x_start, button->y_start,
+                        button->x_end, button->y_end);
+                  printf("  vts_menu_render_button_1_adjacent: "
+                        "up=%u down=%u left=%u right=%u\n",
+                        button->up, button->down, button->left,
+                        button->right);
+                  printf("  vts_menu_render_button_1_auto_action: %s\n",
+                        yes_no(button->auto_action));
+                  printf("  vts_menu_render_button_1_command: "
+                        "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                        button->command[0], button->command[1],
+                        button->command[2], button->command[3],
+                        button->command[4], button->command[5],
+                        button->command[6], button->command[7]);
+               }
                printf("  vts_menu_render_has_video: %s\n",
                      yes_no(render_probe.has_video));
                printf("  vts_menu_render_has_subpicture: %s\n",

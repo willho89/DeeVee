@@ -13,6 +13,7 @@
 #define DEEVEE_DVD_IFO_PROBE_BYTES 2048
 #define DEEVEE_DVD_MAX_TITLES 99
 #define DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS 16
+#define DEEVEE_DVD_MAX_MENU_BUTTONS 36
 
 enum deevee_dvd_status
 {
@@ -178,6 +179,22 @@ struct deevee_dvd_video_probe
    bool constrained_parameters_flag;
 };
 
+struct deevee_dvd_menu_button
+{
+   uint8_t number;
+   uint8_t color_table;
+   bool auto_action;
+   uint16_t x_start;
+   uint16_t x_end;
+   uint16_t y_start;
+   uint16_t y_end;
+   uint8_t up;
+   uint8_t down;
+   uint8_t left;
+   uint8_t right;
+   uint8_t command[8];
+};
+
 struct deevee_dvd_menu_render_probe
 {
    uint32_t scanned_bytes;
@@ -188,6 +205,11 @@ struct deevee_dvd_menu_render_probe
    uint32_t nav_pci_packets;
    uint32_t nav_dsi_packets;
    uint8_t first_subpicture_stream_id;
+   uint8_t starting_button;
+   uint8_t forced_select_button;
+   uint8_t forced_action_button;
+   uint8_t button_count;
+   struct deevee_dvd_menu_button buttons[DEEVEE_DVD_MAX_MENU_BUTTONS];
    bool has_video;
    bool has_subpicture;
    bool has_nav;

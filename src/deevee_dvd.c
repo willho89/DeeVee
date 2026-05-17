@@ -1054,7 +1054,55 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
          probe->private_stream_2_packets++;
          probe->has_nav = true;
          if (substream_id == 0x00)
+         {
+            const uint8_t *pci = data + offset + 7;
+            size_t pci_size = data_size - (offset + 7);
+
             probe->nav_pci_packets++;
+            if (pci_size >= 0x8e)
+            {
+               uint8_t button_count = pci[0x71];
+               uint8_t first_button = pci[0x70];
+               uint8_t forced_select = pci[0x74];
+               uint8_t forced_action = pci[0x75];
+               uint8_t i;
+
+               if (button_count > DEEVEE_DVD_MAX_MENU_BUTTONS)
+                  button_count = DEEVEE_DVD_MAX_MENU_BUTTONS;
+               if (0x8e + (size_t)button_count * 18u <= pci_size)
+               {
+                  probe->starting_button = first_button;
+                  probe->forced_select_button = forced_select;
+                  probe->forced_action_button = forced_action;
+                  probe->button_count = button_count;
+
+                  for (i = 0; i < button_count; i++)
+                  {
+                     const uint8_t *entry = pci + 0x8e + (size_t)i * 18u;
+                     struct deevee_dvd_menu_button *button =
+                        &probe->buttons[i];
+
+                     button->number = (uint8_t)(i + 1u);
+                     button->color_table = entry[0] >> 6;
+                     button->x_start = (uint16_t)(((entry[0] & 0x3fu) << 4) |
+                           (entry[1] >> 4));
+                     button->x_end = (uint16_t)(((entry[1] & 0x03u) << 8) |
+                           entry[2]);
+                     button->auto_action = (entry[3] & 0x40u) != 0;
+                     button->y_start = (uint16_t)(((entry[3] & 0x3fu) << 4) |
+                           (entry[4] >> 4));
+                     button->y_end = (uint16_t)(((entry[4] & 0x03u) << 8) |
+                           entry[5]);
+                     button->up = entry[6] & 0x3fu;
+                     button->down = entry[7] & 0x3fu;
+                     button->left = entry[8] & 0x3fu;
+                     button->right = entry[9] & 0x3fu;
+                     memcpy(button->command, entry + 10,
+                           sizeof(button->command));
+                  }
+               }
+            }
+         }
          else if (substream_id == 0x01)
             probe->nav_dsi_packets++;
       }
