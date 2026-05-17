@@ -506,6 +506,41 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      candidate_index++);
             }
          }
+
+         {
+            struct deevee_dvd_menu_render_probe render_probe;
+            enum deevee_dvd_status render_status =
+               deevee_dvd_probe_vts_menu_pgc_render_streams(&disc, 1, 0,
+                     &render_probe);
+
+            printf("  vts_menu_render_probe_status: %s\n",
+                  deevee_dvd_status_name(render_status));
+            if (render_status == DEEVEE_DVD_OK)
+            {
+               printf("  vts_menu_render_scanned_bytes: %u\n",
+                     render_probe.scanned_bytes);
+               printf("  vts_menu_render_video_packets: %u\n",
+                     render_probe.video_pes_packets);
+               printf("  vts_menu_render_private_stream_1_packets: %u\n",
+                     render_probe.private_stream_1_packets);
+               printf("  vts_menu_render_private_stream_2_packets: %u\n",
+                     render_probe.private_stream_2_packets);
+               printf("  vts_menu_render_subpicture_packets: %u\n",
+                     render_probe.subpicture_packets);
+               printf("  vts_menu_render_nav_pci_packets: %u\n",
+                     render_probe.nav_pci_packets);
+               printf("  vts_menu_render_nav_dsi_packets: %u\n",
+                     render_probe.nav_dsi_packets);
+               printf("  vts_menu_render_first_subpicture_stream_id: 0x%02x\n",
+                     render_probe.first_subpicture_stream_id);
+               printf("  vts_menu_render_has_video: %s\n",
+                     yes_no(render_probe.has_video));
+               printf("  vts_menu_render_has_subpicture: %s\n",
+                     yes_no(render_probe.has_subpicture));
+               printf("  vts_menu_render_has_nav: %s\n",
+                     yes_no(render_probe.has_nav));
+            }
+         }
       }
    }
 

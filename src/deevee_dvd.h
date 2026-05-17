@@ -178,6 +178,21 @@ struct deevee_dvd_video_probe
    bool constrained_parameters_flag;
 };
 
+struct deevee_dvd_menu_render_probe
+{
+   uint32_t scanned_bytes;
+   uint32_t video_pes_packets;
+   uint32_t private_stream_1_packets;
+   uint32_t private_stream_2_packets;
+   uint32_t subpicture_packets;
+   uint32_t nav_pci_packets;
+   uint32_t nav_dsi_packets;
+   uint8_t first_subpicture_stream_id;
+   bool has_video;
+   bool has_subpicture;
+   bool has_nav;
+};
+
 typedef bool (*deevee_dvd_video_payload_callback)(const uint8_t *payload,
       size_t payload_size, void *user_data);
 
@@ -213,6 +228,9 @@ enum deevee_dvd_status deevee_dvd_walk_vob_video_payloads(
 enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
+      struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
+      struct deevee_dvd_menu_render_probe *probe);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif

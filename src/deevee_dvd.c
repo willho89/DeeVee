@@ -1002,6 +1002,199 @@ enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
    return status;
 }
 
+static void probe_menu_render_streams_in_buffer(const uint8_t *data,
+      size_t data_size, struct deevee_dvd_menu_render_probe *probe)
+{
+   size_t offset;
+
+   if (!data || !probe)
+      return;
+
+   probe->scanned_bytes += (uint32_t)data_size;
+
+   for (offset = 0; offset + 9 <= data_size; offset++)
+   {
+      uint8_t stream_id;
+      size_t payload_offset;
+      size_t payload_size;
+      size_t packet_end;
+
+      if (!is_start_code(data + offset))
+         continue;
+
+      stream_id = data[offset + 3];
+      if (stream_id >= 0xe0 && stream_id <= 0xef)
+      {
+         probe->video_pes_packets++;
+         probe->has_video = true;
+      }
+      else if (stream_id == 0xbd &&
+            read_pes_payload_bounds_from_buffer(data, data_size, offset,
+               &payload_offset, &payload_size, &packet_end))
+      {
+         uint8_t substream_id;
+
+         probe->private_stream_1_packets++;
+         if (!payload_size)
+            continue;
+
+         substream_id = data[payload_offset];
+         if (substream_id >= 0x20 && substream_id <= 0x3f)
+         {
+            probe->subpicture_packets++;
+            probe->has_subpicture = true;
+            if (!probe->first_subpicture_stream_id)
+               probe->first_subpicture_stream_id = substream_id;
+         }
+      }
+      else if (stream_id == 0xbf && offset + 7 <= data_size)
+      {
+         uint8_t substream_id = data[offset + 6];
+
+         probe->private_stream_2_packets++;
+         probe->has_nav = true;
+         if (substream_id == 0x00)
+            probe->nav_pci_packets++;
+         else if (substream_id == 0x01)
+            probe->nav_dsi_packets++;
+      }
+   }
+}
+
+enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
+      struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
+      struct deevee_dvd_menu_render_probe *probe)
+{
+   char ifo_path[32];
+   char vob_path[32];
+   enum deevee_iso_status iso_status;
+   struct deevee_iso_entry ifo_entry;
+   struct deevee_iso_entry vob_entry;
+   uint8_t ifo_start[DEEVEE_DVD_IFO_PROBE_BYTES];
+   uint8_t table_header[16];
+   uint8_t pgc_header[0xec];
+   uint8_t cell_playback[24];
+   uint32_t vtsm_pgci_ut;
+   uint32_t table_byte_offset;
+   uint32_t language_start_byte;
+   uint32_t language_byte_offset;
+   uint16_t pgc_count;
+   uint32_t pgc_start_byte;
+   uint32_t pgc_byte_offset;
+   uint16_t cell_playback_table_offset;
+   uint8_t cell_count;
+   uint32_t first_cell_start_sector;
+   uint32_t last_cell_end_sector;
+   uint32_t vob_sector_count;
+   uint32_t span_sector_count;
+   uint32_t span_byte_offset;
+   uint32_t span_size;
+   uint8_t *span_data;
+   enum deevee_dvd_status status;
+
+   if (!disc || !probe || !vts_number || vts_number > 99)
+      return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   memset(probe, 0, sizeof(*probe));
+
+   snprintf(ifo_path, sizeof(ifo_path), "/VIDEO_TS/VTS_%02u_0.IFO",
+         vts_number);
+   snprintf(vob_path, sizeof(vob_path), "/VIDEO_TS/VTS_%02u_0.VOB",
+         vts_number);
+
+   iso_status = deevee_iso_find_path(disc, ifo_path, &ifo_entry);
+   if (iso_status != DEEVEE_ISO_OK)
+      return DEEVEE_DVD_ERROR_IFO_NOT_FOUND;
+   iso_status = deevee_iso_find_path(disc, vob_path, &vob_entry);
+   if (iso_status != DEEVEE_ISO_OK)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   status = read_file_start(disc, &ifo_entry, ifo_start, sizeof(ifo_start));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+   if (memcmp(ifo_start, DEEVEE_DVD_VTS_IDENTIFIER, 12) != 0)
+      return DEEVEE_DVD_ERROR_MALFORMED;
+
+   vtsm_pgci_ut = read_be32(ifo_start + 0xd0);
+   if (!vtsm_pgci_ut)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   table_byte_offset = vtsm_pgci_ut * DEEVEE_DVD_SECTOR_SIZE;
+   status = read_file_bytes(disc, &ifo_entry, table_byte_offset,
+         table_header, sizeof(table_header));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+   if (!read_be16(table_header))
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   language_start_byte = read_be32(table_header + 12);
+   language_byte_offset = table_byte_offset + language_start_byte;
+   status = read_file_bytes(disc, &ifo_entry, language_byte_offset,
+         table_header, sizeof(table_header));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   pgc_count = read_be16(table_header);
+   if (!pgc_count || pgc_index >= pgc_count)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   status = read_file_bytes(disc, &ifo_entry,
+         language_byte_offset + 8u + pgc_index * 8u, table_header, 8);
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   pgc_start_byte = read_be32(table_header + 4);
+   pgc_byte_offset = language_byte_offset + pgc_start_byte;
+   status = read_file_bytes(disc, &ifo_entry, pgc_byte_offset,
+         pgc_header, sizeof(pgc_header));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   cell_count = pgc_header[3];
+   cell_playback_table_offset = read_be16(pgc_header + 0xe8);
+   if (!cell_count || !cell_playback_table_offset)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   status = read_file_bytes(disc, &ifo_entry,
+         pgc_byte_offset + cell_playback_table_offset,
+         cell_playback, sizeof(cell_playback));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   first_cell_start_sector = read_be32(cell_playback + 8);
+   status = read_file_bytes(disc, &ifo_entry,
+         pgc_byte_offset + cell_playback_table_offset +
+            (uint32_t)(cell_count - 1u) * 24u,
+         cell_playback, sizeof(cell_playback));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+   last_cell_end_sector = read_be32(cell_playback + 20);
+
+   vob_sector_count = (vob_entry.size + DEEVEE_DVD_SECTOR_SIZE - 1) /
+      DEEVEE_DVD_SECTOR_SIZE;
+   if (first_cell_start_sector > last_cell_end_sector ||
+         last_cell_end_sector >= vob_sector_count)
+      return DEEVEE_DVD_ERROR_MALFORMED;
+
+   span_sector_count = last_cell_end_sector - first_cell_start_sector + 1u;
+   span_byte_offset = first_cell_start_sector * DEEVEE_DVD_SECTOR_SIZE;
+   span_size = span_sector_count * DEEVEE_DVD_SECTOR_SIZE;
+   if ((uint64_t)span_byte_offset + span_size > vob_entry.size)
+      span_size = vob_entry.size - span_byte_offset;
+
+   span_data = (uint8_t *)malloc(span_size);
+   if (!span_data)
+      return DEEVEE_DVD_ERROR_READ_FAILED;
+
+   status = read_file_bytes(disc, &vob_entry, span_byte_offset,
+         span_data, span_size);
+   if (status == DEEVEE_DVD_OK)
+      probe_menu_render_streams_in_buffer(span_data, span_size, probe);
+
+   free(span_data);
+   return status;
+}
+
 const char *deevee_dvd_status_name(enum deevee_dvd_status status)
 {
    switch (status)
