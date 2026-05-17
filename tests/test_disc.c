@@ -46,6 +46,49 @@ static void put_be32(uint8_t *data, uint32_t value)
    data[3] = (uint8_t)(value & 0xffu);
 }
 
+static void put_start_code(uint8_t *data, uint8_t code)
+{
+   data[0] = 0x00;
+   data[1] = 0x00;
+   data[2] = 0x01;
+   data[3] = code;
+}
+
+static void put_private_stream_1(uint8_t *data, uint8_t substream_id)
+{
+   put_start_code(data, 0xbd);
+   put_be16(data + 4, 10);
+   data[6] = 0x80;
+   data[7] = 0x00;
+   data[8] = 0;
+   data[9] = substream_id;
+}
+
+static void put_private_stream_2(uint8_t *data, uint8_t substream_id)
+{
+   put_start_code(data, 0xbf);
+   put_be16(data + 4, 4);
+   data[6] = substream_id;
+}
+
+static void put_video_pes(uint8_t *data)
+{
+   put_start_code(data, 0xe0);
+   put_be16(data + 4, 20);
+   data[6] = 0x80;
+   data[7] = 0x00;
+   data[8] = 0;
+   put_start_code(data + 9, 0xb3);
+   data[13] = 0x2d;
+   data[14] = 0x02;
+   data[15] = 0x40;
+   data[16] = 0x33;
+   data[17] = 0x04;
+   data[18] = 0x00;
+   data[19] = 0x00;
+   data[20] = 0x20;
+}
+
 static size_t write_record(uint8_t *sector, size_t offset, uint32_t lba,
       uint32_t size, uint8_t flags, const uint8_t *name, uint8_t name_len)
 {
@@ -79,6 +122,11 @@ static void write_title_entry(uint8_t *entry, uint8_t type, uint8_t angles,
 
 static void write_pgc_header(uint8_t *pgc)
 {
+   uint8_t *command_table;
+   uint8_t *program_map;
+   uint8_t *cell_playback;
+   uint8_t *cell_position;
+
    pgc[2] = 2;
    pgc[3] = 3;
    pgc[4] = 0x00;
@@ -90,6 +138,30 @@ static void write_pgc_header(uint8_t *pgc)
    put_be16(pgc + 0xe6, 0x0120);
    put_be16(pgc + 0xe8, 0x0140);
    put_be16(pgc + 0xea, 0x0180);
+
+   command_table = pgc + 0x0100;
+   put_be16(command_table, 1);
+   put_be16(command_table + 2, 2);
+   put_be16(command_table + 4, 3);
+   put_be16(command_table + 6, 31);
+
+   program_map = pgc + 0x0120;
+   program_map[0] = 1;
+
+   cell_playback = pgc + 0x0140;
+   put_be32(cell_playback, 0x09080706);
+   cell_playback[4] = 0x00;
+   cell_playback[5] = 0x00;
+   cell_playback[6] = 0x10;
+   cell_playback[7] = 0x15;
+   put_be32(cell_playback + 8, 2);
+   put_be32(cell_playback + 12, 3);
+   put_be32(cell_playback + 16, 4);
+   put_be32(cell_playback + 20, 5);
+
+   cell_position = pgc + 0x0180;
+   put_be16(cell_position, 7);
+   cell_position[3] = 9;
 }
 
 static int write_sector(FILE *file, const uint8_t *sector)
@@ -138,8 +210,11 @@ static int write_iso_fixture(const char *path, unsigned sectors)
                DEEVEE_DVD_SECTOR_SIZE, 2, &dot, 1);
          offset = write_record(sector, offset, 20,
                DEEVEE_DVD_SECTOR_SIZE, 2, &dotdot, 1);
-         write_record(sector, offset, 22, 24 * DEEVEE_DVD_SECTOR_SIZE, 0,
+         offset = write_record(sector, offset, 22,
+               24 * DEEVEE_DVD_SECTOR_SIZE, 0,
                (const uint8_t *)"VIDEO_TS.IFO;1", 14);
+         write_record(sector, offset, 34, 8 * DEEVEE_DVD_SECTOR_SIZE, 0,
+               (const uint8_t *)"VIDEO_TS.VOB;1", 14);
       }
       else if (i == 22)
       {
@@ -179,6 +254,21 @@ static int write_iso_fixture(const char *path, unsigned sectors)
          put_be32(sector + 48, 0x83000000);
          put_be32(sector + 52, 24);
          write_pgc_header(sector + 64);
+      }
+      else if (i == 36)
+      {
+         put_start_code(sector, 0xba);
+         put_start_code(sector + 16, 0xbb);
+         put_start_code(sector + 32, 0xbc);
+         put_private_stream_1(sector + 48, 0x80);
+         put_start_code(sector + 64, 0xbe);
+         put_private_stream_2(sector + 80, 0x00);
+         put_video_pes(sector + 192);
+         put_start_code(sector + 112, 0xc0);
+         put_start_code(sector + 128, 0xf0);
+         put_private_stream_2(sector + 144, 0x01);
+         put_private_stream_1(sector + 160, 0xa0);
+         put_private_stream_1(sector + 176, 0x20);
       }
 
       if (!write_sector(file, sector))
@@ -250,6 +340,10 @@ int main(void)
    struct deevee_dvd_info dvd_info;
    struct deevee_dvd_menu_language_table menu_table;
    struct deevee_dvd_menu_pgc_summary menu_pgc;
+   struct deevee_dvd_menu_pgc_table_summary menu_pgc_tables;
+   struct deevee_dvd_menu_vob_span menu_vob_span;
+   struct deevee_dvd_vob_packet_probe vob_packet_probe;
+   struct deevee_dvd_video_probe video_probe;
    struct deevee_dvd_title_table title_table;
    struct deevee_iso_entry entry;
    struct deevee_content_info content;
@@ -257,7 +351,7 @@ int main(void)
 
    cleanup_fixture();
    ok = ok && mkdir_one("tests/tmp_disc_probe") == 0;
-   ok = ok && write_iso_fixture("tests/tmp_disc_probe/sample.iso", 40);
+   ok = ok && write_iso_fixture("tests/tmp_disc_probe/sample.iso", 48);
    ok = ok && write_empty_file("tests/tmp_disc_probe/sample.chd");
 
    if (!ok)
@@ -271,7 +365,7 @@ int main(void)
    ok = ok && deevee_content_probe("tests/tmp_disc_probe/sample.iso", &content);
    ok = ok && expect_status(deevee_disc_open(&disc, &content),
          DEEVEE_DISC_OK, "open iso");
-   ok = ok && disc.sector_count == 40;
+   ok = ok && disc.sector_count == 48;
    ok = ok && expect_status(deevee_disc_read_sector(&disc, 16,
             sector, sizeof(sector)), DEEVEE_DISC_OK, "read sector 16");
    ok = ok && memcmp(sector + 1, "CD001", 5) == 0;
@@ -351,7 +445,91 @@ int main(void)
    ok = ok && menu_pgc.program_map_offset == 0x0120;
    ok = ok && menu_pgc.cell_playback_table_offset == 0x0140;
    ok = ok && menu_pgc.cell_position_table_offset == 0x0180;
-   ok = ok && expect_status(deevee_disc_read_sector(&disc, 40,
+   ok = ok && expect_dvd_status(deevee_dvd_read_first_menu_pgc_tables(&disc,
+            &dvd_info, &menu_pgc_tables), DEEVEE_DVD_OK,
+         "first menu pgc tables");
+   ok = ok && strcmp(menu_pgc_tables.language, "en") == 0;
+   ok = ok && menu_pgc_tables.pre_command_count == 1;
+   ok = ok && menu_pgc_tables.post_command_count == 2;
+   ok = ok && menu_pgc_tables.cell_command_count == 3;
+   ok = ok && menu_pgc_tables.command_table_last_byte == 31;
+   ok = ok && menu_pgc_tables.first_program_entry_cell == 1;
+   ok = ok && menu_pgc_tables.first_cell_category == 0x09080706;
+   ok = ok && menu_pgc_tables.first_cell_playback_time[0] == 0x00;
+   ok = ok && menu_pgc_tables.first_cell_playback_time[1] == 0x00;
+   ok = ok && menu_pgc_tables.first_cell_playback_time[2] == 0x10;
+   ok = ok && menu_pgc_tables.first_cell_playback_time[3] == 0x15;
+   ok = ok && menu_pgc_tables.first_cell_first_vobu_start_sector == 2;
+   ok = ok && menu_pgc_tables.first_cell_first_ilvu_end_sector == 3;
+   ok = ok && menu_pgc_tables.first_cell_last_vobu_start_sector == 4;
+   ok = ok && menu_pgc_tables.first_cell_last_vobu_end_sector == 5;
+   ok = ok && menu_pgc_tables.first_cell_vob_id == 7;
+   ok = ok && menu_pgc_tables.first_cell_id == 9;
+   ok = ok && expect_dvd_status(deevee_dvd_resolve_first_menu_vob_span(
+            &disc, &dvd_info, &menu_vob_span), DEEVEE_DVD_OK,
+         "first menu vob span");
+   ok = ok && menu_vob_span.vmgm_vob.lba == 34;
+   ok = ok && menu_vob_span.vmgm_vob.size == 8 * DEEVEE_DVD_SECTOR_SIZE;
+   ok = ok && menu_vob_span.vmgm_vob_sector_count == 8;
+   ok = ok && menu_vob_span.first_cell_start_sector == 2;
+   ok = ok && menu_vob_span.first_cell_end_sector == 5;
+   ok = ok && menu_vob_span.first_cell_start_lba == 36;
+   ok = ok && menu_vob_span.first_cell_end_lba == 39;
+   ok = ok && menu_vob_span.first_cell_vob_id == 7;
+   ok = ok && menu_vob_span.first_cell_id == 9;
+   ok = ok && expect_status(deevee_disc_read_sector(&disc,
+            menu_vob_span.first_cell_start_lba, sector, sizeof(sector)),
+         DEEVEE_DISC_OK, "read first menu cell sector");
+   ok = ok && sector[0] == 0x00 && sector[1] == 0x00 &&
+      sector[2] == 0x01 && sector[3] == 0xba;
+   ok = ok && expect_dvd_status(deevee_dvd_probe_first_menu_vob_packets(
+            &disc, &dvd_info, &vob_packet_probe), DEEVEE_DVD_OK,
+         "first menu vob packet probe");
+   ok = ok && vob_packet_probe.scanned_sectors == 4;
+   ok = ok && vob_packet_probe.pack_header_count == 1;
+   ok = ok && vob_packet_probe.system_header_count == 1;
+   ok = ok && vob_packet_probe.program_stream_map_count == 1;
+   ok = ok && vob_packet_probe.private_stream_1_count == 3;
+   ok = ok && vob_packet_probe.private_stream_2_count == 2;
+   ok = ok && vob_packet_probe.padding_stream_count == 1;
+   ok = ok && vob_packet_probe.video_pes_count == 1;
+   ok = ok && vob_packet_probe.audio_pes_count == 1;
+   ok = ok && vob_packet_probe.ac3_audio_count == 1;
+   ok = ok && vob_packet_probe.dts_audio_count == 0;
+   ok = ok && vob_packet_probe.lpcm_audio_count == 1;
+   ok = ok && vob_packet_probe.subpicture_count == 1;
+   ok = ok && vob_packet_probe.private_stream_1_unknown_count == 0;
+   ok = ok && vob_packet_probe.nav_pci_count == 1;
+   ok = ok && vob_packet_probe.nav_dsi_count == 1;
+   ok = ok && vob_packet_probe.private_stream_2_unknown_count == 0;
+   ok = ok && vob_packet_probe.other_pes_count == 2;
+   ok = ok && vob_packet_probe.nav_pack_count == 2;
+   ok = ok && vob_packet_probe.first_video_stream_id == 0xe0;
+   ok = ok && vob_packet_probe.first_audio_stream_id == 0x80;
+   ok = ok && vob_packet_probe.first_private_stream_1_substream_id == 0x80;
+   ok = ok && vob_packet_probe.first_nav_substream_id == 0x00;
+   ok = ok && vob_packet_probe.has_pack_header;
+   ok = ok && vob_packet_probe.has_video;
+   ok = ok && vob_packet_probe.has_audio;
+   ok = ok && vob_packet_probe.has_subpicture;
+   ok = ok && vob_packet_probe.has_nav;
+   ok = ok && expect_dvd_status(deevee_dvd_probe_first_menu_video(&disc,
+            &dvd_info, &video_probe), DEEVEE_DVD_OK,
+         "first menu video probe");
+   ok = ok && video_probe.scanned_sectors == 4;
+   ok = ok && video_probe.video_pes_packets == 1;
+   ok = ok && video_probe.video_payload_bytes == 17;
+   ok = ok && video_probe.first_video_stream_id == 0xe0;
+   ok = ok && video_probe.has_video_payload;
+   ok = ok && video_probe.has_sequence_header;
+   ok = ok && video_probe.sequence_width == 720;
+   ok = ok && video_probe.sequence_height == 576;
+   ok = ok && video_probe.aspect_ratio_code == 3;
+   ok = ok && video_probe.frame_rate_code == 3;
+   ok = ok && video_probe.bit_rate_value == 4096;
+   ok = ok && video_probe.vbv_buffer_size_value == 4;
+   ok = ok && !video_probe.constrained_parameters_flag;
+   ok = ok && expect_status(deevee_disc_read_sector(&disc, 48,
             sector, sizeof(sector)), DEEVEE_DISC_ERROR_SEEK_FAILED,
          "read beyond end");
    deevee_disc_close(&disc);

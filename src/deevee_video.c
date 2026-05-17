@@ -79,3 +79,40 @@ void deevee_video_render_placeholder(struct deevee_video *video,
       }
    }
 }
+
+void deevee_video_render_decoded_overlay(struct deevee_video *video,
+      uint64_t frame_count)
+{
+   unsigned x;
+   unsigned y;
+   unsigned marker_x;
+   uint32_t green = deevee_rgb(32, 255, 96);
+   uint32_t dark_green = deevee_rgb(0, 96, 32);
+
+   if (!video || !video->pixels)
+      return;
+
+   marker_x = (unsigned)((frame_count * 6u) % DEEVEE_VIDEO_WIDTH);
+
+   for (y = 0; y < DEEVEE_VIDEO_HEIGHT; y++)
+   {
+      for (x = 0; x < DEEVEE_VIDEO_WIDTH; x++)
+      {
+         bool border = x < 6u || y < 6u ||
+            x >= DEEVEE_VIDEO_WIDTH - 6u ||
+            y >= DEEVEE_VIDEO_HEIGHT - 6u;
+         bool corner_block =
+            (x < 54u && y < 34u) ||
+            (x >= DEEVEE_VIDEO_WIDTH - 54u && y < 34u) ||
+            (x < 54u && y >= DEEVEE_VIDEO_HEIGHT - 34u) ||
+            (x >= DEEVEE_VIDEO_WIDTH - 54u &&
+               y >= DEEVEE_VIDEO_HEIGHT - 34u);
+         bool marker = y >= 14u && y < 24u &&
+            x >= marker_x && x < marker_x + 28u;
+
+         if (border || corner_block || marker)
+            video->pixels[y * DEEVEE_VIDEO_WIDTH + x] =
+               marker ? green : dark_green;
+      }
+   }
+}

@@ -19,6 +19,7 @@ static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 static struct retro_log_callback logging;
 static struct deevee_core core;
+static unsigned diagnostic_frame_counter;
 
 static void deevee_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -177,6 +178,18 @@ bool retro_load_game(const struct retro_game_info *game)
 
    deevee_log(RETRO_LOG_INFO, "DeeVee: loaded %s.\n",
          deevee_core_loaded_content_type(&core));
+   deevee_log(RETRO_LOG_INFO,
+         "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
+         "decoded_frames=%llu, frame=%ux%u, pixfmt=%d.\n",
+         deevee_core_menu_playback_active(&core) ? "active" : "inactive",
+         deevee_core_menu_playback_source(&core),
+         (unsigned)deevee_core_menu_payload_count(&core),
+         (unsigned)deevee_core_menu_payload_bytes(&core),
+         (unsigned long long)deevee_core_menu_frames_decoded(&core),
+         deevee_core_menu_last_frame_width(&core),
+         deevee_core_menu_last_frame_height(&core),
+         deevee_core_menu_last_pixel_format(&core));
+   diagnostic_frame_counter = 0;
    return true;
 }
 
@@ -192,6 +205,7 @@ bool retro_load_game_special(unsigned game_type,
 void retro_unload_game(void)
 {
    deevee_core_unload(&core);
+   diagnostic_frame_counter = 0;
 }
 
 unsigned retro_get_region(void)
@@ -209,6 +223,20 @@ void retro_run(void)
 
    deevee_update_input();
    deevee_core_run(&core, &video, &audio);
+   diagnostic_frame_counter++;
+
+   if (diagnostic_frame_counter == 1 ||
+         diagnostic_frame_counter % 120u == 0u)
+      deevee_log(RETRO_LOG_INFO,
+            "DeeVee: run menu=%s source=%s packets=%llu frames=%llu "
+            "frame=%ux%u pixfmt=%d.\n",
+            deevee_core_menu_playback_active(&core) ? "active" : "inactive",
+            deevee_core_menu_playback_source(&core),
+            (unsigned long long)deevee_core_menu_packets_sent(&core),
+            (unsigned long long)deevee_core_menu_frames_decoded(&core),
+            deevee_core_menu_last_frame_width(&core),
+            deevee_core_menu_last_frame_height(&core),
+            deevee_core_menu_last_pixel_format(&core));
 
    if (video_cb)
       video_cb(video.pixels, video.width, video.height, video.pitch);

@@ -98,6 +98,88 @@ struct deevee_dvd_menu_pgc_summary
    uint16_t cell_position_table_offset;
 };
 
+struct deevee_dvd_menu_pgc_table_summary
+{
+   char language[3];
+   uint16_t pre_command_count;
+   uint16_t post_command_count;
+   uint16_t cell_command_count;
+   uint32_t command_table_last_byte;
+   uint8_t first_program_entry_cell;
+   uint32_t first_cell_category;
+   uint8_t first_cell_playback_time[4];
+   uint32_t first_cell_first_vobu_start_sector;
+   uint32_t first_cell_first_ilvu_end_sector;
+   uint32_t first_cell_last_vobu_start_sector;
+   uint32_t first_cell_last_vobu_end_sector;
+   uint16_t first_cell_vob_id;
+   uint8_t first_cell_id;
+};
+
+struct deevee_dvd_menu_vob_span
+{
+   struct deevee_iso_entry vmgm_vob;
+   uint32_t vmgm_vob_sector_count;
+   uint32_t first_cell_start_sector;
+   uint32_t first_cell_end_sector;
+   uint64_t first_cell_start_lba;
+   uint64_t first_cell_end_lba;
+   uint16_t first_cell_vob_id;
+   uint8_t first_cell_id;
+};
+
+struct deevee_dvd_vob_packet_probe
+{
+   uint32_t scanned_sectors;
+   uint32_t pack_header_count;
+   uint32_t system_header_count;
+   uint32_t program_stream_map_count;
+   uint32_t private_stream_1_count;
+   uint32_t private_stream_2_count;
+   uint32_t padding_stream_count;
+   uint32_t video_pes_count;
+   uint32_t audio_pes_count;
+   uint32_t ac3_audio_count;
+   uint32_t dts_audio_count;
+   uint32_t lpcm_audio_count;
+   uint32_t subpicture_count;
+   uint32_t private_stream_1_unknown_count;
+   uint32_t nav_pci_count;
+   uint32_t nav_dsi_count;
+   uint32_t private_stream_2_unknown_count;
+   uint32_t other_pes_count;
+   uint32_t nav_pack_count;
+   uint8_t first_video_stream_id;
+   uint8_t first_audio_stream_id;
+   uint8_t first_private_stream_1_substream_id;
+   uint8_t first_nav_substream_id;
+   bool has_pack_header;
+   bool has_video;
+   bool has_audio;
+   bool has_subpicture;
+   bool has_nav;
+};
+
+struct deevee_dvd_video_probe
+{
+   uint32_t scanned_sectors;
+   uint32_t video_pes_packets;
+   uint32_t video_payload_bytes;
+   uint8_t first_video_stream_id;
+   bool has_video_payload;
+   bool has_sequence_header;
+   uint16_t sequence_width;
+   uint16_t sequence_height;
+   uint8_t aspect_ratio_code;
+   uint8_t frame_rate_code;
+   uint32_t bit_rate_value;
+   uint16_t vbv_buffer_size_value;
+   bool constrained_parameters_flag;
+};
+
+typedef bool (*deevee_dvd_video_payload_callback)(const uint8_t *payload,
+      size_t payload_size, void *user_data);
+
 enum deevee_dvd_status deevee_dvd_probe(struct deevee_disc *disc,
       struct deevee_dvd_info *info);
 enum deevee_dvd_status deevee_dvd_read_title_table(struct deevee_disc *disc,
@@ -109,6 +191,24 @@ enum deevee_dvd_status deevee_dvd_read_menu_language_table(
 enum deevee_dvd_status deevee_dvd_read_first_menu_pgc(
       struct deevee_disc *disc, const struct deevee_dvd_info *info,
       struct deevee_dvd_menu_pgc_summary *pgc);
+enum deevee_dvd_status deevee_dvd_read_first_menu_pgc_tables(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_pgc_table_summary *tables);
+enum deevee_dvd_status deevee_dvd_resolve_first_menu_vob_span(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_vob_span *span);
+enum deevee_dvd_status deevee_dvd_probe_first_menu_vob_packets(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_vob_packet_probe *probe);
+enum deevee_dvd_status deevee_dvd_probe_first_menu_video(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_video_probe *probe);
+enum deevee_dvd_status deevee_dvd_walk_first_menu_video_payloads(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vob_video_payloads(
+      struct deevee_disc *disc, const char *iso_path,
+      deevee_dvd_video_payload_callback callback, void *user_data);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif

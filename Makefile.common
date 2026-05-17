@@ -4,6 +4,7 @@ SOURCES_C := \
 	src/libretro.c \
 	src/deevee_core.c \
 	src/deevee_content.c \
+	src/deevee_decoder.c \
 	src/deevee_disc.c \
 	src/deevee_dvd.c \
 	src/deevee_iso.c \
@@ -16,3 +17,9 @@ WARNFLAGS := -Wall -Wextra -Wpedantic
 CSTD := -std=c99
 
 CFLAGS += $(CSTD) $(WARNFLAGS) $(INCFLAGS)
+
+ifeq ($(HAVE_FFMPEG),1)
+	FFMPEG_LIBS ?= -lavcodec -lavutil -lswscale
+	CFLAGS += -DHAVE_FFMPEG=1 $(FFMPEG_CFLAGS)
+	LDFLAGS += $(FFMPEG_LIBS)
+endif

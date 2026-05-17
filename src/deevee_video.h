@@ -19,5 +19,7 @@ bool deevee_video_init(struct deevee_video *video);
 void deevee_video_deinit(struct deevee_video *video);
 void deevee_video_render_placeholder(struct deevee_video *video,
       uint64_t frame_count, const char *content_label);
+void deevee_video_render_decoded_overlay(struct deevee_video *video,
+      uint64_t frame_count);
 
 #endif

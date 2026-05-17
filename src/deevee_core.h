@@ -7,6 +7,9 @@
 
 #include "deevee_audio.h"
 #include "deevee_content.h"
+#include "deevee_decoder.h"
+#include "deevee_disc.h"
+#include "deevee_dvd.h"
 #include "deevee_nav.h"
 #include "deevee_video.h"
 
@@ -24,15 +27,36 @@ struct deevee_audio_frame
    size_t frames;
 };
 
+struct deevee_video_payload_chunk
+{
+   size_t offset;
+   size_t size;
+};
+
 struct deevee_core
 {
    bool initialized;
    bool loaded;
+   bool menu_playback_active;
    uint64_t frame_count;
    struct deevee_content_info content;
    struct deevee_nav nav;
    struct deevee_video video;
    struct deevee_audio audio;
+   struct deevee_video_decoder decoder;
+   uint8_t *menu_video_payloads;
+   size_t menu_video_payload_size;
+   size_t menu_video_payload_capacity;
+   struct deevee_video_payload_chunk *menu_video_chunks;
+   size_t menu_video_chunk_count;
+   size_t menu_video_chunk_capacity;
+   size_t next_menu_video_chunk;
+   char menu_playback_source[32];
+   uint64_t menu_packets_sent;
+   uint64_t menu_frames_decoded;
+   unsigned menu_last_frame_width;
+   unsigned menu_last_frame_height;
+   int menu_last_pixel_format;
 };
 
 bool deevee_core_init(struct deevee_core *core);
@@ -45,5 +69,14 @@ void deevee_core_set_button(struct deevee_core *core,
 void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
       struct deevee_audio_frame *audio);
 const char *deevee_core_loaded_content_type(const struct deevee_core *core);
+bool deevee_core_menu_playback_active(const struct deevee_core *core);
+const char *deevee_core_menu_playback_source(const struct deevee_core *core);
+size_t deevee_core_menu_payload_count(const struct deevee_core *core);
+size_t deevee_core_menu_payload_bytes(const struct deevee_core *core);
+uint64_t deevee_core_menu_packets_sent(const struct deevee_core *core);
+uint64_t deevee_core_menu_frames_decoded(const struct deevee_core *core);
+unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core);
+unsigned deevee_core_menu_last_frame_height(const struct deevee_core *core);
+int deevee_core_menu_last_pixel_format(const struct deevee_core *core);
 
 #endif

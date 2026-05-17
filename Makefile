@@ -11,6 +11,7 @@ endif
 OBJ := $(SOURCES_C:.c=.o)
 TEST_EXE := tests/test_content
 TEST_DISC_EXE := tests/test_disc
+TEST_DECODER_EXE := tests/test_decoder
 PROBE_EXE := tools/deevee_probe
 
 ifeq ($(OS),Windows_NT)
@@ -19,6 +20,7 @@ ifeq ($(OS),Windows_NT)
 	EXPORTS := -Wl,--export-all-symbols
 	TEST_EXE := tests/test_content.exe
 	TEST_DISC_EXE := tests/test_disc.exe
+	TEST_DECODER_EXE := tests/test_decoder.exe
 	PROBE_EXE := tools/deevee_probe.exe
 else
 	UNAME_S := $(shell uname -s)
@@ -33,7 +35,8 @@ else
 endif
 
 CLEAN_FILES := $(OBJ) $(TARGET) tests/test_content tests/test_content.exe \
-	tests/test_disc tests/test_disc.exe tools/deevee_probe tools/deevee_probe.exe
+	tests/test_disc tests/test_disc.exe tests/test_decoder tests/test_decoder.exe \
+	tools/deevee_probe tools/deevee_probe.exe
 
 .PHONY: all clean probe test
 
@@ -51,14 +54,18 @@ $(TEST_EXE): tests/test_content.c src/deevee_content.c src/deevee_content.h
 $(TEST_DISC_EXE): tests/test_disc.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
 	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tests/test_disc.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c
 
+$(TEST_DECODER_EXE): tests/test_decoder.c src/deevee_decoder.c src/deevee_decoder.h
+	$(CC) $(CFLAGS) -o $@ tests/test_decoder.c src/deevee_decoder.c $(LDFLAGS)
+
 $(PROBE_EXE): tools/deevee_probe.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
-	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c
+	$(CC) $(CFLAGS) -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c src/deevee_decoder.c $(LDFLAGS)
 
 probe: $(PROBE_EXE)
 
-test: $(TEST_EXE) $(TEST_DISC_EXE)
+test: $(TEST_EXE) $(TEST_DISC_EXE) $(TEST_DECODER_EXE)
 	./$(TEST_EXE)
 	./$(TEST_DISC_EXE)
+	./$(TEST_DECODER_EXE)
 
 clean:
 ifeq ($(OS),Windows_NT)
