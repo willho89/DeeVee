@@ -5,6 +5,7 @@ SOURCES_C := \
 	src/deevee_core.c \
 	src/deevee_content.c \
 	src/deevee_disc.c \
+	src/deevee_dvd.c \
 	src/deevee_iso.c \
 	src/deevee_nav.c \
 	src/deevee_video.c \

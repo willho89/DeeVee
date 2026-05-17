@@ -1,5 +1,6 @@
 #include "deevee_content.h"
 #include "deevee_disc.h"
+#include "deevee_dvd.h"
 #include "deevee_iso.h"
 
 #include <stdio.h>
@@ -51,6 +52,8 @@ static void print_disc_probe(const struct deevee_content_info *info)
    {
       struct deevee_iso_entry video_ts_ifo;
       enum deevee_iso_status iso_status;
+      struct deevee_dvd_info dvd_info;
+      enum deevee_dvd_status dvd_status;
 
       printf("  sector_size: %u\n", DEEVEE_DVD_SECTOR_SIZE);
       printf("  sector_count: %llu\n",
@@ -71,6 +74,59 @@ static void print_disc_probe(const struct deevee_content_info *info)
       {
          printf("  video_ts_ifo_lba: %u\n", video_ts_ifo.lba);
          printf("  video_ts_ifo_size: %u\n", video_ts_ifo.size);
+      }
+
+      dvd_status = deevee_dvd_probe(&disc, &dvd_info);
+      printf("  dvd_probe_status: %s\n",
+            deevee_dvd_status_name(dvd_status));
+      if (dvd_status == DEEVEE_DVD_OK ||
+            dvd_status == DEEVEE_DVD_ERROR_INVALID_VMG)
+      {
+         struct deevee_dvd_title_table title_table;
+         enum deevee_dvd_status title_status;
+         uint16_t i;
+
+         printf("  dvd_video: %s\n", yes_no(dvd_info.is_dvd_video));
+         printf("  video_ts_ifo_identifier: %s\n",
+               dvd_info.vmg_identifier[0] ? dvd_info.vmg_identifier : "(empty)");
+         printf("  vmg_last_sector: %u\n", dvd_info.vmg_last_sector);
+         printf("  vmgi_last_sector: %u\n", dvd_info.vmgi_last_sector);
+         printf("  vmg_title_set_count: %u\n", dvd_info.vmg_title_set_count);
+         printf("  vmgi_last_byte: %u\n", dvd_info.vmgi_last_byte);
+         printf("  first_play_pgc_sector: %u\n", dvd_info.first_play_pgc);
+         printf("  vmgm_vobs_sector: %u\n", dvd_info.vmgm_vobs);
+         printf("  tt_srpt_sector: %u\n", dvd_info.tt_srpt);
+         printf("  vmgm_pgci_ut_sector: %u\n", dvd_info.vmgm_pgci_ut);
+         printf("  ptl_mait_sector: %u\n", dvd_info.ptl_mait);
+         printf("  vts_atrt_sector: %u\n", dvd_info.vts_atrt);
+         printf("  txtdt_mgi_sector: %u\n", dvd_info.txtdt_mgi);
+         printf("  vmgm_c_adt_sector: %u\n", dvd_info.vmgm_c_adt);
+         printf("  vmgm_vobu_admap_sector: %u\n", dvd_info.vmgm_vobu_admap);
+
+         title_status = deevee_dvd_read_title_table(&disc,
+               &dvd_info, &title_table);
+         printf("  title_table_status: %s\n",
+               deevee_dvd_status_name(title_status));
+         if (title_status == DEEVEE_DVD_OK)
+         {
+            printf("  title_count: %u\n", title_table.title_count);
+            printf("  parsed_title_count: %u\n",
+                  title_table.parsed_title_count);
+            for (i = 0; i < title_table.parsed_title_count; i++)
+            {
+               const struct deevee_dvd_title *title =
+                  &title_table.titles[i];
+               printf("  title_%u_type: %u\n", i + 1, title->title_type);
+               printf("  title_%u_angles: %u\n", i + 1, title->angle_count);
+               printf("  title_%u_chapters: %u\n", i + 1,
+                     title->chapter_count);
+               printf("  title_%u_vts: %u\n", i + 1, title->vts_number);
+               printf("  title_%u_vts_title: %u\n", i + 1,
+                     title->vts_title_number);
+               printf("  title_%u_vts_start_sector: %u\n", i + 1,
+                     title->vts_start_sector);
+            }
+         }
       }
    }
 

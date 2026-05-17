@@ -48,11 +48,11 @@ $(TARGET): $(OBJ)
 $(TEST_EXE): tests/test_content.c src/deevee_content.c src/deevee_content.h
 	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tests/test_content.c src/deevee_content.c
 
-$(TEST_DISC_EXE): tests/test_disc.c src/deevee_disc.c src/deevee_disc.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
-	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tests/test_disc.c src/deevee_disc.c src/deevee_iso.c src/deevee_content.c
+$(TEST_DISC_EXE): tests/test_disc.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
+	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tests/test_disc.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c
 
-$(PROBE_EXE): tools/deevee_probe.c src/deevee_disc.c src/deevee_disc.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
-	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_iso.c src/deevee_content.c
+$(PROBE_EXE): tools/deevee_probe.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h
+	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c
 
 probe: $(PROBE_EXE)
 
