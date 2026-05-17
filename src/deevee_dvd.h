@@ -9,6 +9,7 @@
 #include "deevee_iso.h"
 
 #define DEEVEE_DVD_VMG_IDENTIFIER "DVDVIDEO-VMG"
+#define DEEVEE_DVD_VTS_IDENTIFIER "DVDVIDEO-VTS"
 #define DEEVEE_DVD_IFO_PROBE_BYTES 2048
 #define DEEVEE_DVD_MAX_TITLES 99
 #define DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS 16
@@ -208,6 +209,9 @@ enum deevee_dvd_status deevee_dvd_walk_first_menu_video_payloads(
       deevee_dvd_video_payload_callback callback, void *user_data);
 enum deevee_dvd_status deevee_dvd_walk_vob_video_payloads(
       struct deevee_disc *disc, const char *iso_path,
+      deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
+      struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       deevee_dvd_video_payload_callback callback, void *user_data);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 

@@ -231,6 +231,50 @@ end_disc:
    return prepared;
 }
 
+static bool prepare_menu_playback_from_vts_pgc(struct deevee_core *core,
+      const struct deevee_content_info *content, unsigned vts,
+      unsigned pgc_index)
+{
+   struct deevee_disc disc;
+   struct payload_extract_context extract_context;
+   bool prepared = false;
+
+   if (!core || !content || content->type != DEEVEE_CONTENT_ISO)
+      return false;
+
+   clear_menu_video(core);
+   deevee_disc_init(&disc);
+   if (deevee_disc_open(&disc, content) != DEEVEE_DISC_OK)
+      return false;
+
+   extract_context.core = core;
+   extract_context.ok = true;
+   if (deevee_dvd_walk_vts_menu_pgc_video_payloads(&disc, vts, pgc_index,
+            extract_payload_callback, &extract_context) != DEEVEE_DVD_OK ||
+         !extract_context.ok || !core->menu_video_chunk_count)
+      goto end_disc;
+
+   if (!open_menu_decoder(core))
+      goto end_disc;
+
+   core->next_menu_video_chunk = 0;
+   prepared = true;
+
+end_disc:
+   deevee_disc_close(&disc);
+   if (!prepared)
+      clear_menu_video(core);
+   else
+   {
+      snprintf(core->menu_playback_source,
+            sizeof(core->menu_playback_source), "VTS_%02u_0.PGC_%02u",
+            vts, pgc_index + 1u);
+      core->menu_playback_source[sizeof(core->menu_playback_source) - 1] =
+         '\0';
+   }
+   return prepared;
+}
+
 static bool keep_prepared_menu_if_decodable(struct deevee_core *core)
 {
    unsigned sample_frame;
@@ -290,6 +334,18 @@ static bool prepare_any_menu_playback(struct deevee_core *core,
    if (prepare_menu_playback(core, content) &&
          keep_prepared_menu_if_decodable(core))
       return true;
+
+   for (vts = 1; vts <= 99; vts++)
+   {
+      unsigned pgc_index;
+
+      for (pgc_index = 0; pgc_index < 32; pgc_index++)
+      {
+         if (prepare_menu_playback_from_vts_pgc(core, content, vts,
+                  pgc_index) && keep_prepared_menu_if_decodable(core))
+            return true;
+      }
+   }
 
    if (prepare_menu_playback_from_vob_path(core, content,
             "/VIDEO_TS/VIDEO_TS.VOB") &&
