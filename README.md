@@ -31,7 +31,7 @@ Known limitations:
 - Submenu navigation is still spotty. Some Setup/Special Features paths work or partially work on the main test disc, but broader compatibility is not expected yet.
 - Subtitle/subpicture rendering is not implemented.
 - Menu highlights are diagnostic/basic and are not full DVD subpicture compositing.
-- Playback compatibility has mostly been tested against a small set of DVD images, especially the Tim and Eric test disc.
+- Playback compatibility has mostly been tested against a small set of DVD images with wider testing to come once feature complete on initial test sample.
 - No frontend options exist yet for region behavior, deinterlacing, aspect overrides, language defaults, or subtitle/audio stream selection.
 
 ## Releases
