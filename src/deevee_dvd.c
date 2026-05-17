@@ -132,6 +132,51 @@ enum deevee_dvd_status deevee_dvd_read_title_table(struct deevee_disc *disc,
    return DEEVEE_DVD_OK;
 }
 
+enum deevee_dvd_status deevee_dvd_read_menu_language_table(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_language_table *table)
+{
+   uint8_t sector[DEEVEE_DVD_SECTOR_SIZE];
+   uint16_t i;
+   uint16_t parsed_count;
+
+   if (!disc || !info || !table)
+      return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   memset(table, 0, sizeof(*table));
+
+   if (!info->is_dvd_video || !info->vmgm_pgci_ut)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   if (deevee_disc_read_sector(disc,
+            (uint64_t)info->video_ts_ifo.lba + info->vmgm_pgci_ut,
+            sector, sizeof(sector)) != DEEVEE_DISC_OK)
+      return DEEVEE_DVD_ERROR_READ_FAILED;
+
+   table->language_count = read_be16(sector);
+   table->last_byte = read_be32(sector + 4);
+   parsed_count = table->language_count;
+   if (parsed_count > DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS)
+      parsed_count = DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS;
+
+   if ((size_t)8 + (size_t)parsed_count * 8 > sizeof(sector))
+      return DEEVEE_DVD_ERROR_MALFORMED;
+
+   table->parsed_language_count = parsed_count;
+   for (i = 0; i < parsed_count; i++)
+   {
+      const uint8_t *entry = sector + 8 + (size_t)i * 8;
+      table->languages[i].language[0] = (char)entry[0];
+      table->languages[i].language[1] = (char)entry[1];
+      table->languages[i].language[2] = '\0';
+      table->languages[i].language_extension = entry[2];
+      table->languages[i].menu_existence = entry[3];
+      table->languages[i].start_byte = read_be32(entry + 4);
+   }
+
+   return DEEVEE_DVD_OK;
+}
+
 const char *deevee_dvd_status_name(enum deevee_dvd_status status)
 {
    switch (status)

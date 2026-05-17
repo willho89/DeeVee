@@ -150,6 +150,16 @@ static int write_iso_fixture(const char *path, unsigned sectors)
          write_title_entry(sector + 8, 1, 1, 4, 0, 1, 1, 1000);
          write_title_entry(sector + 20, 2, 2, 8, 0x00ff, 2, 1, 2000);
       }
+      else if (i == 33)
+      {
+         put_be16(sector, 1);
+         put_be32(sector + 4, 63);
+         sector[8] = 'e';
+         sector[9] = 'n';
+         sector[10] = 0;
+         sector[11] = 0x80;
+         put_be32(sector + 12, 40);
+      }
 
       if (!write_sector(file, sector))
       {
@@ -218,6 +228,7 @@ int main(void)
    int ok = 1;
    uint8_t sector[DEEVEE_DVD_SECTOR_SIZE];
    struct deevee_dvd_info dvd_info;
+   struct deevee_dvd_menu_language_table menu_table;
    struct deevee_dvd_title_table title_table;
    struct deevee_iso_entry entry;
    struct deevee_content_info content;
@@ -290,6 +301,15 @@ int main(void)
    ok = ok && title_table.titles[1].vts_number == 2;
    ok = ok && title_table.titles[1].vts_title_number == 1;
    ok = ok && title_table.titles[1].vts_start_sector == 2000;
+   ok = ok && expect_dvd_status(deevee_dvd_read_menu_language_table(&disc,
+            &dvd_info, &menu_table), DEEVEE_DVD_OK, "menu language table");
+   ok = ok && menu_table.language_count == 1;
+   ok = ok && menu_table.last_byte == 63;
+   ok = ok && menu_table.parsed_language_count == 1;
+   ok = ok && strcmp(menu_table.languages[0].language, "en") == 0;
+   ok = ok && menu_table.languages[0].language_extension == 0;
+   ok = ok && menu_table.languages[0].menu_existence == 0x80;
+   ok = ok && menu_table.languages[0].start_byte == 40;
    ok = ok && expect_status(deevee_disc_read_sector(&disc, 40,
             sector, sizeof(sector)), DEEVEE_DISC_ERROR_SEEK_FAILED,
          "read beyond end");

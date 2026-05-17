@@ -83,7 +83,9 @@ static void print_disc_probe(const struct deevee_content_info *info)
             dvd_status == DEEVEE_DVD_ERROR_INVALID_VMG)
       {
          struct deevee_dvd_title_table title_table;
+         struct deevee_dvd_menu_language_table menu_table;
          enum deevee_dvd_status title_status;
+         enum deevee_dvd_status menu_status;
          uint16_t i;
 
          printf("  dvd_video: %s\n", yes_no(dvd_info.is_dvd_video));
@@ -125,6 +127,31 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      title->vts_title_number);
                printf("  title_%u_vts_start_sector: %u\n", i + 1,
                      title->vts_start_sector);
+            }
+         }
+
+         menu_status = deevee_dvd_read_menu_language_table(&disc,
+               &dvd_info, &menu_table);
+         printf("  menu_language_table_status: %s\n",
+               deevee_dvd_status_name(menu_status));
+         if (menu_status == DEEVEE_DVD_OK)
+         {
+            printf("  menu_language_count: %u\n",
+                  menu_table.language_count);
+            printf("  parsed_menu_language_count: %u\n",
+                  menu_table.parsed_language_count);
+            for (i = 0; i < menu_table.parsed_language_count; i++)
+            {
+               const struct deevee_dvd_menu_language_unit *language =
+                  &menu_table.languages[i];
+               printf("  menu_language_%u_code: %s\n", i + 1,
+                     language->language);
+               printf("  menu_language_%u_extension: %u\n", i + 1,
+                     language->language_extension);
+               printf("  menu_language_%u_existence: %u\n", i + 1,
+                     language->menu_existence);
+               printf("  menu_language_%u_start_byte: %u\n", i + 1,
+                     language->start_byte);
             }
          }
       }

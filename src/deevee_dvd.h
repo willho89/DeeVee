@@ -11,6 +11,7 @@
 #define DEEVEE_DVD_VMG_IDENTIFIER "DVDVIDEO-VMG"
 #define DEEVEE_DVD_IFO_PROBE_BYTES 2048
 #define DEEVEE_DVD_MAX_TITLES 99
+#define DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS 16
 
 enum deevee_dvd_status
 {
@@ -62,11 +63,31 @@ struct deevee_dvd_title_table
    struct deevee_dvd_title titles[DEEVEE_DVD_MAX_TITLES];
 };
 
+struct deevee_dvd_menu_language_unit
+{
+   char language[3];
+   uint8_t language_extension;
+   uint8_t menu_existence;
+   uint32_t start_byte;
+};
+
+struct deevee_dvd_menu_language_table
+{
+   uint16_t language_count;
+   uint32_t last_byte;
+   uint16_t parsed_language_count;
+   struct deevee_dvd_menu_language_unit
+      languages[DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS];
+};
+
 enum deevee_dvd_status deevee_dvd_probe(struct deevee_disc *disc,
       struct deevee_dvd_info *info);
 enum deevee_dvd_status deevee_dvd_read_title_table(struct deevee_disc *disc,
       const struct deevee_dvd_info *info,
       struct deevee_dvd_title_table *table);
+enum deevee_dvd_status deevee_dvd_read_menu_language_table(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_language_table *table);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif
