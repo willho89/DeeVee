@@ -6,6 +6,7 @@
 
 #define DEEVEE_MIN_MENU_VIDEO_PAYLOAD_BYTES 65536u
 #define DEEVEE_MENU_VISIBILITY_SAMPLE_FRAMES 30u
+#define DEEVEE_MENU_FRAME_REPEAT 2u
 
 struct payload_extract_context
 {
@@ -14,6 +15,7 @@ struct payload_extract_context
 };
 
 static bool decode_next_menu_frame(struct deevee_core *core);
+static bool open_menu_decoder(struct deevee_core *core);
 
 static void clear_menu_video(struct deevee_core *core)
 {
@@ -30,6 +32,7 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_video_chunk_count = 0;
    core->menu_video_chunk_capacity = 0;
    core->next_menu_video_chunk = 0;
+   core->menu_frame_hold = 0;
    core->menu_playback_active = false;
    core->menu_playback_source[0] = '\0';
    core->menu_packets_sent = 0;
@@ -89,6 +92,24 @@ static bool append_menu_video_payload(struct deevee_core *core,
    core->menu_video_chunks[core->menu_video_chunk_count].size = payload_size;
    core->menu_video_payload_size += payload_size;
    core->menu_video_chunk_count++;
+   return true;
+}
+
+static bool reset_menu_decoder_position(struct deevee_core *core)
+{
+   if (!core || !core->menu_video_chunk_count)
+      return false;
+
+   if (!open_menu_decoder(core))
+      return false;
+
+   core->next_menu_video_chunk = 0;
+   core->menu_frame_hold = 0;
+   core->menu_packets_sent = 0;
+   core->menu_frames_decoded = 0;
+   core->menu_last_frame_width = 0;
+   core->menu_last_frame_height = 0;
+   core->menu_last_pixel_format = 0;
    return true;
 }
 
@@ -253,7 +274,7 @@ static bool keep_prepared_menu_if_decodable(struct deevee_core *core)
       }
 
       if (max_component > 32u && visible_pixels > 1000u)
-         return true;
+         return reset_menu_decoder_position(core);
    }
 
    clear_menu_video(core);
@@ -439,12 +460,16 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
 
    if (core->menu_playback_active)
    {
-      if (!decode_next_menu_frame(core))
+      if (core->menu_frame_hold)
+         core->menu_frame_hold--;
+      else if (!decode_next_menu_frame(core))
       {
          core->menu_playback_active = false;
          deevee_video_render_placeholder(&core->video, core->frame_count,
                label);
       }
+      else
+         core->menu_frame_hold = DEEVEE_MENU_FRAME_REPEAT - 1u;
    }
    else
       deevee_video_render_placeholder(&core->video, core->frame_count, label);
