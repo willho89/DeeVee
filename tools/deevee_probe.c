@@ -48,6 +48,29 @@ struct decode_probe_context
    uint32_t payload_bytes;
 };
 
+struct packet_probe_context
+{
+   uint32_t packet_count;
+   uint32_t video_packet_count;
+   uint32_t packet_with_pts_count;
+   uint32_t packet_with_dts_count;
+   uint32_t printed_packets;
+   bool last_pts_valid;
+   uint64_t last_pts;
+   bool pts_monotonic;
+};
+
+struct timed_decode_probe_context
+{
+   struct deevee_video_decoder *decoder;
+   struct deevee_decoder_frame_probe *probe;
+   enum deevee_decoder_status status;
+   uint32_t payload_count;
+   uint32_t payload_bytes;
+   uint32_t printed_frame_pts;
+   uint32_t decode_error_count;
+};
+
 static bool decode_payload_callback(const uint8_t *payload,
       size_t payload_size, void *user_data)
 {
@@ -61,17 +84,87 @@ static bool decode_payload_callback(const uint8_t *payload,
    return context->status == DEEVEE_DECODER_OK;
 }
 
-static bool decode_until_frame_callback(const uint8_t *payload,
-      size_t payload_size, void *user_data)
+static bool title_packet_probe_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
 {
-   struct decode_probe_context *context =
-      (struct decode_probe_context *)user_data;
+   struct packet_probe_context *context =
+      (struct packet_probe_context *)user_data;
 
-   context->status = deevee_decoder_decode_mpeg2_payload(context->decoder,
-         payload, payload_size, context->probe);
+   if (!packet || !context)
+      return false;
+
+   context->packet_count++;
+   if (packet->stream_id >= 0xe0 && packet->stream_id <= 0xef)
+   {
+      context->video_packet_count++;
+      if (packet->has_pts)
+      {
+         context->packet_with_pts_count++;
+         if (context->last_pts_valid && packet->pts < context->last_pts)
+            context->pts_monotonic = false;
+         context->last_pts = packet->pts;
+         context->last_pts_valid = true;
+      }
+      if (packet->has_dts)
+         context->packet_with_dts_count++;
+
+      if (context->printed_packets < 8u)
+      {
+         printf("  resolved_title_packet_%u: stream=0x%02x vob=%u "
+               "sector=%u bytes=%u pts=%s%llu dts=%s%llu scr=%s%llu\n",
+               context->printed_packets + 1u, packet->stream_id,
+               packet->vob_index, packet->logical_sector,
+               (unsigned)packet->payload_size,
+               packet->has_pts ? "" : "none:",
+               (unsigned long long)(packet->has_pts ? packet->pts : 0),
+               packet->has_dts ? "" : "none:",
+               (unsigned long long)(packet->has_dts ? packet->dts : 0),
+               packet->has_scr ? "" : "none:",
+               (unsigned long long)(packet->has_scr ? packet->scr : 0));
+         context->printed_packets++;
+      }
+   }
+
+   return context->video_packet_count < 256u;
+}
+
+static bool timed_decode_packet_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
+{
+   struct timed_decode_probe_context *context =
+      (struct timed_decode_probe_context *)user_data;
+   uint32_t frames_before;
+
+   if (!packet || !context)
+      return false;
+   if (packet->stream_id < 0xe0 || packet->stream_id > 0xef)
+      return true;
+
+   frames_before = context->probe->frames_decoded;
+   context->status = deevee_decoder_decode_mpeg2_timed_payload(
+         context->decoder, packet->payload, packet->payload_size,
+         packet->has_pts, packet->pts, packet->has_dts, packet->dts,
+         context->probe);
    context->payload_count++;
-   context->payload_bytes += (uint32_t)payload_size;
-   return context->status == DEEVEE_DECODER_OK && !context->probe->got_frame;
+   context->payload_bytes += (uint32_t)packet->payload_size;
+   if (context->status != DEEVEE_DECODER_OK)
+   {
+      context->decode_error_count++;
+      context->status = DEEVEE_DECODER_OK;
+      return context->payload_count < 512u;
+   }
+
+   if (context->probe->frames_decoded > frames_before &&
+         context->probe->has_pts && context->printed_frame_pts < 8u)
+   {
+      printf("  resolved_title_frame_%u_pts: %lld\n",
+            context->printed_frame_pts + 1u,
+            (long long)context->probe->pts);
+      context->printed_frame_pts++;
+   }
+
+   return context->status == DEEVEE_DECODER_OK &&
+      context->probe->frames_decoded < 16u;
 }
 
 static void print_menu_vob_decode_probe(struct deevee_disc *disc,
@@ -171,7 +264,7 @@ static void print_title_decode_probe(struct deevee_disc *disc,
 {
    struct deevee_video_decoder decoder;
    struct deevee_decoder_frame_probe frame_probe;
-   struct decode_probe_context decode_context;
+   struct timed_decode_probe_context decode_context;
    enum deevee_decoder_status decoder_status;
    enum deevee_dvd_status dvd_status;
 
@@ -188,8 +281,8 @@ static void print_title_decode_probe(struct deevee_disc *disc,
       decode_context.probe = &frame_probe;
       decode_context.status = DEEVEE_DECODER_OK;
 
-      dvd_status = deevee_dvd_walk_title_pgc_video_payloads(disc, title_pgc,
-            decode_until_frame_callback, &decode_context);
+      dvd_status = deevee_dvd_walk_title_pgc_packets(disc, title_pgc,
+            timed_decode_packet_callback, &decode_context);
       if (dvd_status != DEEVEE_DVD_OK)
          decoder_status = DEEVEE_DECODER_ERROR_DECODE_FAILED;
       else if (decode_context.status != DEEVEE_DECODER_OK)
@@ -204,6 +297,8 @@ static void print_title_decode_probe(struct deevee_disc *disc,
          decode_context.payload_count);
    printf("  resolved_title_decode_payload_bytes: %u\n",
          decode_context.payload_bytes);
+   printf("  resolved_title_decode_errors: %u\n",
+         decode_context.decode_error_count);
    printf("  resolved_title_decode_packets_sent: %u\n",
          frame_probe.packets_sent);
    printf("  resolved_title_decode_frames: %u\n",
@@ -219,6 +314,30 @@ static void print_title_decode_probe(struct deevee_disc *disc,
    }
 
    deevee_decoder_deinit(&decoder);
+}
+
+static void print_title_packet_probe(struct deevee_disc *disc,
+      const struct deevee_dvd_title_pgc *title_pgc)
+{
+   struct packet_probe_context context;
+   enum deevee_dvd_status status;
+
+   memset(&context, 0, sizeof(context));
+   context.pts_monotonic = true;
+   status = deevee_dvd_walk_title_pgc_packets(disc, title_pgc,
+         title_packet_probe_callback, &context);
+
+   printf("  resolved_title_packet_probe_status: %s\n",
+         deevee_dvd_status_name(status));
+   printf("  resolved_title_packets_scanned: %u\n", context.packet_count);
+   printf("  resolved_title_video_packets_scanned: %u\n",
+         context.video_packet_count);
+   printf("  resolved_title_video_packets_with_pts: %u\n",
+         context.packet_with_pts_count);
+   printf("  resolved_title_video_packets_with_dts: %u\n",
+         context.packet_with_dts_count);
+   printf("  resolved_title_video_pts_monotonic: %s\n",
+         yes_no(context.pts_monotonic));
 }
 
 static void print_disc_probe(const struct deevee_content_info *info)
@@ -761,6 +880,7 @@ static void print_disc_probe(const struct deevee_content_info *info)
                                  title_pgc.last_sector);
                            printf("  resolved_title_pgc_sector_count: %u\n",
                                  title_pgc.sector_count);
+                           print_title_packet_probe(&disc, &title_pgc);
                            print_title_decode_probe(&disc, &title_pgc);
                         }
                      }

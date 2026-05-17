@@ -22,6 +22,7 @@ struct deevee_video_decoder
    bool opened;
    const char *backend_name;
    void *context;
+   void *parser;
    uint32_t *output_pixels;
    unsigned output_width;
    unsigned output_height;
@@ -37,6 +38,8 @@ struct deevee_decoder_frame_probe
    unsigned height;
    int pixel_format;
    bool got_frame;
+   bool has_pts;
+   int64_t pts;
 };
 
 enum deevee_decoder_status deevee_decoder_init(
@@ -50,6 +53,10 @@ enum deevee_decoder_status deevee_decoder_set_xrgb8888_output(
 enum deevee_decoder_status deevee_decoder_decode_mpeg2_payload(
       struct deevee_video_decoder *decoder, const uint8_t *payload,
       size_t payload_size, struct deevee_decoder_frame_probe *probe);
+enum deevee_decoder_status deevee_decoder_decode_mpeg2_timed_payload(
+      struct deevee_video_decoder *decoder, const uint8_t *payload,
+      size_t payload_size, bool has_pts, uint64_t pts, bool has_dts,
+      uint64_t dts, struct deevee_decoder_frame_probe *probe);
 enum deevee_decoder_status deevee_decoder_flush_mpeg2(
       struct deevee_video_decoder *decoder,
       struct deevee_decoder_frame_probe *probe);

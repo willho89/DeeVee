@@ -129,6 +129,167 @@ static int read_pes_payload_bounds_from_buffer(const uint8_t *data,
    return 1;
 }
 
+static uint64_t read_mpeg_timestamp(const uint8_t *data)
+{
+   return (((uint64_t)(data[0] >> 1) & 0x07u) << 30) |
+      ((uint64_t)data[1] << 22) |
+      (((uint64_t)(data[2] >> 1) & 0x7fu) << 15) |
+      ((uint64_t)data[3] << 7) |
+      ((uint64_t)data[4] >> 1);
+}
+
+static int read_pes_timestamps_from_buffer(const uint8_t *data,
+      size_t data_size, size_t offset, bool *has_pts, uint64_t *pts,
+      bool *has_dts, uint64_t *dts)
+{
+   uint8_t flags;
+   size_t header_length;
+   size_t timestamp_offset;
+
+   if (!data || !has_pts || !pts || !has_dts || !dts || offset + 14 > data_size)
+      return 0;
+
+   *has_pts = false;
+   *has_dts = false;
+   *pts = 0;
+   *dts = 0;
+
+   flags = data[offset + 7];
+   header_length = data[offset + 8];
+   timestamp_offset = offset + 9;
+   if (timestamp_offset + header_length > data_size)
+      return 0;
+
+   if ((flags & 0x80u) != 0 && timestamp_offset + 5 <= data_size)
+   {
+      *pts = read_mpeg_timestamp(data + timestamp_offset);
+      *has_pts = true;
+      timestamp_offset += 5;
+   }
+
+   if ((flags & 0x40u) != 0 && timestamp_offset + 5 <= data_size)
+   {
+      *dts = read_mpeg_timestamp(data + timestamp_offset);
+      *has_dts = true;
+   }
+
+   return 1;
+}
+
+static int read_pack_scr_from_buffer(const uint8_t *data, size_t data_size,
+      size_t offset, uint64_t *scr)
+{
+   const uint8_t *pack;
+
+   if (!data || !scr || offset + 10 > data_size ||
+         !is_start_code(data + offset) || data[offset + 3] != 0xba)
+      return 0;
+
+   pack = data + offset + 4;
+   *scr = (((uint64_t)(pack[0] >> 3) & 0x07u) << 30) |
+      (((uint64_t)pack[0] & 0x03u) << 28) |
+      ((uint64_t)pack[1] << 20) |
+      (((uint64_t)(pack[2] >> 3) & 0x1fu) << 15) |
+      (((uint64_t)pack[2] & 0x03u) << 13) |
+      ((uint64_t)pack[3] << 5) |
+      ((uint64_t)pack[4] >> 3);
+   return 1;
+}
+
+static enum deevee_dvd_status walk_packets_in_buffer(const uint8_t *data,
+      size_t data_size, uint32_t base_logical_sector, unsigned vob_index,
+      bool *has_scr, uint64_t *scr, size_t *consumed,
+      bool *stopped, deevee_dvd_packet_callback callback, void *user_data)
+{
+   size_t offset = 0;
+
+   if (!data || !has_scr || !scr || !consumed || !stopped || !callback)
+      return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   while (offset + 9 <= data_size)
+   {
+      uint8_t stream_id;
+      size_t payload_offset;
+      size_t payload_size;
+      size_t packet_end;
+
+      if (!is_start_code(data + offset))
+      {
+         offset++;
+         continue;
+      }
+
+      stream_id = data[offset + 3];
+      if (stream_id == 0xba)
+      {
+         uint64_t pack_scr;
+
+         if (read_pack_scr_from_buffer(data, data_size, offset, &pack_scr))
+         {
+            *scr = pack_scr;
+            *has_scr = true;
+         }
+         offset++;
+         continue;
+      }
+
+      if (stream_id == 0xb9)
+      {
+         offset += 4;
+         continue;
+      }
+
+      if (stream_id == 0xbb || stream_id == 0xbc || stream_id == 0xbe)
+      {
+         uint16_t packet_length;
+         size_t packet_end;
+
+         if (offset + 6 > data_size)
+            break;
+
+         packet_length = read_be16(data + offset + 4);
+         packet_end = offset + 6u + packet_length;
+         if (packet_end > data_size)
+            break;
+         offset = packet_end;
+         continue;
+      }
+
+      if (!read_pes_payload_bounds_from_buffer(data, data_size, offset,
+            &payload_offset, &payload_size, &packet_end))
+         break;
+
+      if (stream_id >= 0xbc)
+      {
+         struct deevee_dvd_packet packet;
+
+         memset(&packet, 0, sizeof(packet));
+         packet.stream_id = stream_id;
+         packet.payload = data + payload_offset;
+         packet.payload_size = payload_size;
+         packet.logical_sector = base_logical_sector +
+            (uint32_t)(offset / DEEVEE_DVD_SECTOR_SIZE);
+         packet.vob_index = vob_index;
+         packet.has_scr = *has_scr;
+         packet.scr = *scr;
+         (void)read_pes_timestamps_from_buffer(data, data_size, offset,
+               &packet.has_pts, &packet.pts, &packet.has_dts, &packet.dts);
+
+         if (!callback(&packet, user_data))
+         {
+            *consumed = packet_end;
+            *stopped = true;
+            return DEEVEE_DVD_OK;
+         }
+      }
+
+      offset = packet_end;
+   }
+
+   *consumed = offset;
+   return DEEVEE_DVD_OK;
+}
+
 static enum deevee_dvd_status walk_video_payloads_in_buffer(
       const uint8_t *data, size_t data_size,
       deevee_dvd_video_payload_callback callback, void *user_data)
@@ -1504,18 +1665,30 @@ enum deevee_dvd_status deevee_dvd_resolve_title_pgc(
    return DEEVEE_DVD_OK;
 }
 
-enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
+enum deevee_dvd_status deevee_dvd_walk_title_pgc_packets(
       struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
-      deevee_dvd_video_payload_callback callback, void *user_data)
+      deevee_dvd_packet_callback callback, void *user_data)
 {
+   enum { WINDOW_SECTORS = 64 };
    uint32_t current_sector;
    uint32_t remaining_sectors;
    uint32_t skipped_sectors = 0;
    unsigned vob_index;
+   uint8_t *buffer = NULL;
+   size_t carry_size = 0;
+   bool has_scr = false;
+   uint64_t scr = 0;
+   bool stopped = false;
+   enum deevee_dvd_status final_status = DEEVEE_DVD_OK;
 
    if (!disc || !title_pgc || !callback || !title_pgc->vts_number ||
          title_pgc->first_sector > title_pgc->last_sector)
       return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   buffer = (uint8_t *)malloc((WINDOW_SECTORS * 2u + 1u) *
+         DEEVEE_DVD_SECTOR_SIZE);
+   if (!buffer)
+      return DEEVEE_DVD_ERROR_READ_FAILED;
 
    current_sector = title_pgc->first_sector;
    remaining_sectors = title_pgc->sector_count;
@@ -1527,11 +1700,6 @@ enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
       struct deevee_iso_entry vob_entry;
       uint32_t vob_sectors;
       uint32_t sector_in_vob;
-      uint32_t sectors_to_read;
-      uint32_t byte_offset;
-      uint32_t byte_size;
-      uint8_t *vob_data;
-      enum deevee_dvd_status status;
 
       snprintf(vob_path, sizeof(vob_path), "/VIDEO_TS/VTS_%02u_%u.VOB",
             title_pgc->vts_number, vob_index);
@@ -1550,35 +1718,110 @@ enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
       }
 
       sector_in_vob = current_sector - skipped_sectors;
-      sectors_to_read = vob_sectors - sector_in_vob;
-      if (sectors_to_read > remaining_sectors)
-         sectors_to_read = remaining_sectors;
+      while (remaining_sectors && sector_in_vob < vob_sectors && !stopped)
+      {
+         uint32_t sectors_to_read = vob_sectors - sector_in_vob;
+         uint32_t byte_offset;
+         uint32_t byte_size;
+         size_t total_size;
+         size_t consumed = 0;
+         enum deevee_dvd_status status;
 
-      byte_offset = sector_in_vob * DEEVEE_DVD_SECTOR_SIZE;
-      byte_size = sectors_to_read * DEEVEE_DVD_SECTOR_SIZE;
-      if ((uint64_t)byte_offset + byte_size > vob_entry.size)
-         byte_size = vob_entry.size - byte_offset;
+         if (sectors_to_read > remaining_sectors)
+            sectors_to_read = remaining_sectors;
+         if (sectors_to_read > WINDOW_SECTORS)
+            sectors_to_read = WINDOW_SECTORS;
 
-      vob_data = (uint8_t *)malloc(byte_size);
-      if (!vob_data)
-         return DEEVEE_DVD_ERROR_READ_FAILED;
+         byte_offset = sector_in_vob * DEEVEE_DVD_SECTOR_SIZE;
+         byte_size = sectors_to_read * DEEVEE_DVD_SECTOR_SIZE;
+         if ((uint64_t)byte_offset + byte_size > vob_entry.size)
+            byte_size = vob_entry.size - byte_offset;
 
-      status = read_file_bytes(disc, &vob_entry, byte_offset, vob_data,
-            byte_size);
-      if (status == DEEVEE_DVD_OK)
-         status = walk_video_payloads_in_buffer(vob_data, byte_size,
-               callback, user_data);
-      free(vob_data);
-      if (status != DEEVEE_DVD_OK)
-         return status;
+         status = read_file_bytes(disc, &vob_entry, byte_offset,
+               buffer + carry_size, byte_size);
+         if (status != DEEVEE_DVD_OK)
+         {
+            final_status = status;
+            goto end;
+         }
 
-      current_sector += sectors_to_read;
-      remaining_sectors -= sectors_to_read;
+         total_size = carry_size + byte_size;
+         status = walk_packets_in_buffer(buffer, total_size,
+               current_sector - (uint32_t)(carry_size / DEEVEE_DVD_SECTOR_SIZE),
+               vob_index, &has_scr, &scr, &consumed, &stopped, callback,
+               user_data);
+         if (status != DEEVEE_DVD_OK)
+         {
+            final_status = status;
+            goto end;
+         }
+
+         if (consumed < total_size)
+         {
+            carry_size = total_size - consumed;
+            if (carry_size > WINDOW_SECTORS * DEEVEE_DVD_SECTOR_SIZE)
+            {
+               final_status = DEEVEE_DVD_ERROR_MALFORMED;
+               goto end;
+            }
+            memmove(buffer, buffer + consumed, carry_size);
+         }
+         else
+            carry_size = 0;
+
+         current_sector += sectors_to_read;
+         remaining_sectors -= sectors_to_read;
+         sector_in_vob += sectors_to_read;
+      }
+
       skipped_sectors += vob_sectors;
+      if (stopped)
+         break;
    }
 
-   return remaining_sectors ? DEEVEE_DVD_ERROR_TABLE_NOT_FOUND :
-      DEEVEE_DVD_OK;
+   if (remaining_sectors && !stopped)
+      final_status = DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+end:
+   free(buffer);
+   return final_status;
+}
+
+struct title_video_payload_context
+{
+   deevee_dvd_video_payload_callback callback;
+   void *user_data;
+};
+
+static bool title_video_payload_packet_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
+{
+   struct title_video_payload_context *context =
+      (struct title_video_payload_context *)user_data;
+
+   if (!packet || !context || !context->callback)
+      return false;
+
+   if (packet->stream_id >= 0xe0 && packet->stream_id <= 0xef)
+      return context->callback(packet->payload, packet->payload_size,
+            context->user_data);
+
+   return true;
+}
+
+enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
+      struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
+      deevee_dvd_video_payload_callback callback, void *user_data)
+{
+   struct title_video_payload_context context;
+
+   if (!callback)
+      return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   context.callback = callback;
+   context.user_data = user_data;
+   return deevee_dvd_walk_title_pgc_packets(disc, title_pgc,
+         title_video_payload_packet_callback, &context);
 }
 
 const char *deevee_dvd_status_name(enum deevee_dvd_status status)

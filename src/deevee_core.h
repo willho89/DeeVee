@@ -31,6 +31,10 @@ struct deevee_video_payload_chunk
 {
    size_t offset;
    size_t size;
+   bool has_pts;
+   uint64_t pts;
+   bool has_dts;
+   uint64_t dts;
 };
 
 struct deevee_core
@@ -69,6 +73,11 @@ struct deevee_core
    uint8_t menu_resolved_jump_command[8];
    bool menu_has_resolved_jump;
    uint8_t menu_current_vts;
+   bool playback_is_title;
+   bool menu_last_frame_has_pts;
+   int64_t menu_last_frame_pts;
+   bool menu_previous_frame_has_pts;
+   int64_t menu_previous_frame_pts;
 };
 
 bool deevee_core_init(struct deevee_core *core);

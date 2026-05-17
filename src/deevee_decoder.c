@@ -27,6 +27,12 @@ void deevee_decoder_deinit(struct deevee_video_decoder *decoder)
       return;
 
 #if HAVE_FFMPEG
+   if (decoder->parser)
+   {
+      AVCodecParserContext *parser =
+         (AVCodecParserContext *)decoder->parser;
+      av_parser_close(parser);
+   }
    if (decoder->context)
    {
       AVCodecContext *context = (AVCodecContext *)decoder->context;
@@ -47,23 +53,35 @@ enum deevee_decoder_status deevee_decoder_open_mpeg2(
    {
       const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_MPEG2VIDEO);
       AVCodecContext *context;
+      AVCodecParserContext *parser;
 
       av_log_set_level(AV_LOG_QUIET);
 
       if (!codec)
          return DEEVEE_DECODER_ERROR_NOT_FOUND;
 
+      parser = av_parser_init(AV_CODEC_ID_MPEG2VIDEO);
+      if (!parser)
+         return DEEVEE_DECODER_ERROR_OPEN_FAILED;
+
       context = avcodec_alloc_context3(codec);
       if (!context)
+      {
+         av_parser_close(parser);
          return DEEVEE_DECODER_ERROR_OPEN_FAILED;
+      }
+      context->pkt_timebase.num = 1;
+      context->pkt_timebase.den = 90000;
 
       if (avcodec_open2(context, codec, NULL) < 0)
       {
          avcodec_free_context(&context);
+         av_parser_close(parser);
          return DEEVEE_DECODER_ERROR_OPEN_FAILED;
       }
 
       decoder->context = context;
+      decoder->parser = parser;
       decoder->opened = true;
       return DEEVEE_DECODER_OK;
    }
@@ -159,6 +177,11 @@ static enum deevee_decoder_status receive_available_frames(
       probe->width = (unsigned)frame->width;
       probe->height = (unsigned)frame->height;
       probe->pixel_format = frame->format;
+      if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+      {
+         probe->has_pts = true;
+         probe->pts = frame->best_effort_timestamp;
+      }
       av_frame_unref(frame);
    }
 
@@ -169,11 +192,72 @@ static enum deevee_decoder_status receive_available_frames(
 
    return DEEVEE_DECODER_ERROR_DECODE_FAILED;
 }
+
+static enum deevee_decoder_status send_decoder_packet(
+      struct deevee_video_decoder *decoder, const uint8_t *payload,
+      size_t payload_size, bool has_pts, int64_t pts, bool has_dts,
+      int64_t dts, struct deevee_decoder_frame_probe *probe)
+{
+   AVCodecContext *context;
+   AVPacket *packet;
+   int result;
+
+   if (!decoder || !decoder->opened || !decoder->context || !payload ||
+         !payload_size || !probe)
+      return DEEVEE_DECODER_ERROR_INVALID_ARGUMENT;
+
+   context = (AVCodecContext *)decoder->context;
+   packet = av_packet_alloc();
+   if (!packet)
+      return DEEVEE_DECODER_ERROR_ALLOCATION_FAILED;
+
+   result = av_new_packet(packet, (int)payload_size);
+   if (result < 0)
+   {
+      av_packet_free(&packet);
+      return DEEVEE_DECODER_ERROR_ALLOCATION_FAILED;
+   }
+
+   memcpy(packet->data, payload, payload_size);
+   if (has_pts)
+      packet->pts = pts;
+   if (has_dts)
+      packet->dts = dts;
+
+   result = avcodec_send_packet(context, packet);
+   if (result == AVERROR(EAGAIN))
+   {
+      enum deevee_decoder_status receive_status =
+         receive_available_frames(decoder, probe);
+      if (receive_status != DEEVEE_DECODER_OK)
+      {
+         av_packet_free(&packet);
+         return receive_status;
+      }
+      result = avcodec_send_packet(context, packet);
+   }
+   av_packet_free(&packet);
+
+   if (result < 0)
+      return DEEVEE_DECODER_ERROR_DECODE_FAILED;
+
+   probe->packets_sent++;
+   return receive_available_frames(decoder, probe);
+}
 #endif
 
 enum deevee_decoder_status deevee_decoder_decode_mpeg2_payload(
       struct deevee_video_decoder *decoder, const uint8_t *payload,
       size_t payload_size, struct deevee_decoder_frame_probe *probe)
+{
+   return deevee_decoder_decode_mpeg2_timed_payload(decoder, payload,
+         payload_size, false, 0, false, 0, probe);
+}
+
+enum deevee_decoder_status deevee_decoder_decode_mpeg2_timed_payload(
+      struct deevee_video_decoder *decoder, const uint8_t *payload,
+      size_t payload_size, bool has_pts, uint64_t pts, bool has_dts,
+      uint64_t dts, struct deevee_decoder_frame_probe *probe)
 {
    if (!decoder || !payload || !payload_size || !probe)
       return DEEVEE_DECODER_ERROR_INVALID_ARGUMENT;
@@ -181,37 +265,65 @@ enum deevee_decoder_status deevee_decoder_decode_mpeg2_payload(
 #if HAVE_FFMPEG
    {
       AVCodecContext *context;
-      AVPacket *packet;
-      int result;
+      AVCodecParserContext *parser;
+      const uint8_t *cursor = payload;
+      int remaining = (int)payload_size;
+      bool sent_timestamp = false;
+      enum deevee_decoder_status status = DEEVEE_DECODER_OK;
 
       if (!decoder->opened || !decoder->context)
          return DEEVEE_DECODER_ERROR_INVALID_ARGUMENT;
 
       context = (AVCodecContext *)decoder->context;
-      packet = av_packet_alloc();
-      if (!packet)
-         return DEEVEE_DECODER_ERROR_ALLOCATION_FAILED;
+      parser = (AVCodecParserContext *)decoder->parser;
+      if (!parser)
+         return send_decoder_packet(decoder, payload, payload_size, has_pts,
+               (int64_t)pts, has_dts, (int64_t)dts, probe);
 
-      result = av_new_packet(packet, (int)payload_size);
-      if (result < 0)
+      while (remaining > 0)
       {
-         av_packet_free(&packet);
-         return DEEVEE_DECODER_ERROR_ALLOCATION_FAILED;
+         uint8_t *parsed_payload = NULL;
+         int parsed_size = 0;
+         int64_t input_pts = has_pts && !sent_timestamp ?
+            (int64_t)pts : AV_NOPTS_VALUE;
+         int64_t input_dts = has_dts && !sent_timestamp ?
+            (int64_t)dts : AV_NOPTS_VALUE;
+         int consumed = av_parser_parse2(parser, context, &parsed_payload,
+               &parsed_size, cursor, remaining, input_pts, input_dts, 0);
+
+         if (consumed < 0)
+            return DEEVEE_DECODER_ERROR_DECODE_FAILED;
+
+         cursor += consumed;
+         remaining -= consumed;
+
+         if (parsed_size > 0)
+         {
+            bool parsed_has_pts = parser->pts != AV_NOPTS_VALUE;
+            bool parsed_has_dts = parser->dts != AV_NOPTS_VALUE;
+
+            status = send_decoder_packet(decoder, parsed_payload,
+                  (size_t)parsed_size, parsed_has_pts, parser->pts,
+                  parsed_has_dts, parser->dts, probe);
+            if (status != DEEVEE_DECODER_OK)
+               return status;
+            if (input_pts != AV_NOPTS_VALUE || input_dts != AV_NOPTS_VALUE)
+               sent_timestamp = true;
+         }
+
+         if (consumed == 0 && parsed_size == 0)
+            break;
       }
 
-      memcpy(packet->data, payload, payload_size);
-      result = avcodec_send_packet(context, packet);
-      av_packet_free(&packet);
-
-      if (result < 0)
-         return DEEVEE_DECODER_ERROR_DECODE_FAILED;
-
-      probe->packets_sent++;
-      return receive_available_frames(decoder, probe);
+      return status;
    }
 #else
    (void)payload;
    (void)payload_size;
+   (void)has_pts;
+   (void)pts;
+   (void)has_dts;
+   (void)dts;
    return DEEVEE_DECODER_ERROR_UNAVAILABLE;
 #endif
 }

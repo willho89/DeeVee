@@ -252,8 +252,25 @@ struct deevee_dvd_title_pgc
    uint32_t sector_count;
 };
 
+struct deevee_dvd_packet
+{
+   uint8_t stream_id;
+   const uint8_t *payload;
+   size_t payload_size;
+   uint32_t logical_sector;
+   unsigned vob_index;
+   bool has_scr;
+   uint64_t scr;
+   bool has_pts;
+   uint64_t pts;
+   bool has_dts;
+   uint64_t dts;
+};
+
 typedef bool (*deevee_dvd_video_payload_callback)(const uint8_t *payload,
       size_t payload_size, void *user_data);
+typedef bool (*deevee_dvd_packet_callback)(
+      const struct deevee_dvd_packet *packet, void *user_data);
 
 enum deevee_dvd_status deevee_dvd_probe(struct deevee_disc *disc,
       struct deevee_dvd_info *info);
@@ -300,6 +317,9 @@ enum deevee_dvd_status deevee_dvd_resolve_title_pgc(
 enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
       struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_title_pgc_packets(
+      struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
+      deevee_dvd_packet_callback callback, void *user_data);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif

@@ -14,6 +14,12 @@ struct payload_extract_context
    bool ok;
 };
 
+struct packet_extract_context
+{
+   struct deevee_core *core;
+   bool ok;
+};
+
 static bool decode_next_menu_frame(struct deevee_core *core);
 static bool open_menu_decoder(struct deevee_core *core);
 static bool prepare_title_playback_from_command(struct deevee_core *core,
@@ -60,6 +66,11 @@ static void clear_menu_video(struct deevee_core *core)
          sizeof(core->menu_resolved_jump_command));
    core->menu_has_resolved_jump = false;
    core->menu_current_vts = 0;
+   core->playback_is_title = false;
+   core->menu_last_frame_has_pts = false;
+   core->menu_last_frame_pts = 0;
+   core->menu_previous_frame_has_pts = false;
+   core->menu_previous_frame_pts = 0;
 }
 
 static bool append_menu_video_payload(struct deevee_core *core,
@@ -110,8 +121,32 @@ static bool append_menu_video_payload(struct deevee_core *core,
    core->menu_video_chunks[core->menu_video_chunk_count].offset =
       core->menu_video_payload_size;
    core->menu_video_chunks[core->menu_video_chunk_count].size = payload_size;
+   core->menu_video_chunks[core->menu_video_chunk_count].has_pts = false;
+   core->menu_video_chunks[core->menu_video_chunk_count].pts = 0;
+   core->menu_video_chunks[core->menu_video_chunk_count].has_dts = false;
+   core->menu_video_chunks[core->menu_video_chunk_count].dts = 0;
    core->menu_video_payload_size += payload_size;
    core->menu_video_chunk_count++;
+   return true;
+}
+
+static bool append_menu_video_packet(struct deevee_core *core,
+      const struct deevee_dvd_packet *packet)
+{
+   if (!core || !packet || !packet->payload || !packet->payload_size)
+      return false;
+
+   if (!append_menu_video_payload(core, packet->payload, packet->payload_size))
+      return false;
+
+   core->menu_video_chunks[core->menu_video_chunk_count - 1u].has_pts =
+      packet->has_pts;
+   core->menu_video_chunks[core->menu_video_chunk_count - 1u].pts =
+      packet->pts;
+   core->menu_video_chunks[core->menu_video_chunk_count - 1u].has_dts =
+      packet->has_dts;
+   core->menu_video_chunks[core->menu_video_chunk_count - 1u].dts =
+      packet->dts;
    return true;
 }
 
@@ -180,6 +215,10 @@ static bool reset_menu_decoder_position(struct deevee_core *core)
    core->menu_last_frame_width = 0;
    core->menu_last_frame_height = 0;
    core->menu_last_pixel_format = 0;
+   core->menu_last_frame_has_pts = false;
+   core->menu_last_frame_pts = 0;
+   core->menu_previous_frame_has_pts = false;
+   core->menu_previous_frame_pts = 0;
    return true;
 }
 
@@ -342,6 +381,34 @@ static void draw_menu_button_overlay(struct deevee_core *core)
    }
 }
 
+static unsigned frame_repeat_for_last_decoded_frame(const struct deevee_core *core)
+{
+   uint64_t delta;
+   unsigned repeat;
+
+   if (!core || !core->playback_is_title ||
+         !core->menu_last_frame_has_pts ||
+         !core->menu_previous_frame_has_pts ||
+         core->menu_last_frame_pts <= core->menu_previous_frame_pts)
+      return core && core->menu_frame_repeat ? core->menu_frame_repeat :
+         DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
+
+   delta = (uint64_t)(core->menu_last_frame_pts -
+      core->menu_previous_frame_pts);
+   repeat = (unsigned)((delta * DEEVEE_VIDEO_FPS +
+         45000u) / 90000u);
+   if (repeat < 1u)
+      repeat = 1u;
+   if (repeat > 10u)
+      repeat = 10u;
+   return repeat;
+}
+
+static bool should_draw_menu_overlay(const struct deevee_core *core)
+{
+   return core && !core->playback_is_title;
+}
+
 static bool extract_payload_callback(const uint8_t *payload,
       size_t payload_size, void *user_data)
 {
@@ -350,6 +417,22 @@ static bool extract_payload_callback(const uint8_t *payload,
 
    context->ok = append_menu_video_payload(context->core, payload,
          payload_size);
+   return context->ok;
+}
+
+static bool extract_video_packet_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
+{
+   struct packet_extract_context *context =
+      (struct packet_extract_context *)user_data;
+
+   if (!context || !packet)
+      return false;
+
+   if (packet->stream_id < 0xe0 || packet->stream_id > 0xef)
+      return true;
+
+   context->ok = append_menu_video_packet(context->core, packet);
    return context->ok;
 }
 
@@ -523,7 +606,7 @@ static bool prepare_title_playback_from_command(struct deevee_core *core,
    struct deevee_dvd_title_table title_table;
    struct deevee_dvd_playback_target target;
    struct deevee_dvd_title_pgc title_pgc;
-   struct payload_extract_context extract_context;
+   struct packet_extract_context extract_context;
    bool prepared = false;
    bool cleared_video = false;
 
@@ -554,8 +637,8 @@ static bool prepare_title_playback_from_command(struct deevee_core *core,
    cleared_video = true;
    extract_context.core = core;
    extract_context.ok = true;
-   if (deevee_dvd_walk_title_pgc_video_payloads(&disc, &title_pgc,
-            extract_payload_callback, &extract_context) != DEEVEE_DVD_OK ||
+   if (deevee_dvd_walk_title_pgc_packets(&disc, &title_pgc,
+            extract_video_packet_callback, &extract_context) != DEEVEE_DVD_OK ||
          !extract_context.ok || !core->menu_video_chunk_count)
       goto end_disc;
 
@@ -565,6 +648,7 @@ static bool prepare_title_playback_from_command(struct deevee_core *core,
 
    core->next_menu_video_chunk = 0;
    core->menu_playback_active = true;
+   core->playback_is_title = true;
    core->menu_current_vts = title_pgc.vts_number;
    snprintf(core->menu_playback_source, sizeof(core->menu_playback_source),
          "VTS_%02u_TITLE_%02u_PGC_%02u", title_pgc.vts_number,
@@ -699,6 +783,14 @@ static bool decode_next_menu_frame(struct deevee_core *core)
                core->menu_last_frame_width = frame_probe.width;
                core->menu_last_frame_height = frame_probe.height;
                core->menu_last_pixel_format = frame_probe.pixel_format;
+               if (frame_probe.has_pts)
+               {
+                  core->menu_previous_frame_has_pts =
+                     core->menu_last_frame_has_pts;
+                  core->menu_previous_frame_pts = core->menu_last_frame_pts;
+                  core->menu_last_frame_has_pts = true;
+                  core->menu_last_frame_pts = frame_probe.pts;
+               }
             }
             break;
          }
@@ -709,9 +801,15 @@ static bool decode_next_menu_frame(struct deevee_core *core)
 
       chunk = &core->menu_video_chunks[core->next_menu_video_chunk++];
       payload = core->menu_video_payloads + chunk->offset;
-      if (deevee_decoder_decode_mpeg2_payload(&core->decoder, payload,
-               chunk->size, &frame_probe) != DEEVEE_DECODER_OK)
+      if (deevee_decoder_decode_mpeg2_timed_payload(&core->decoder, payload,
+               chunk->size, chunk->has_pts, chunk->pts, chunk->has_dts,
+               chunk->dts, &frame_probe) != DEEVEE_DECODER_OK)
       {
+         if (core->playback_is_title)
+         {
+            attempts++;
+            continue;
+         }
          if (!open_menu_decoder(core))
             return false;
          attempts++;
@@ -725,6 +823,13 @@ static bool decode_next_menu_frame(struct deevee_core *core)
          core->menu_last_frame_width = frame_probe.width;
          core->menu_last_frame_height = frame_probe.height;
          core->menu_last_pixel_format = frame_probe.pixel_format;
+         if (frame_probe.has_pts)
+         {
+            core->menu_previous_frame_has_pts = core->menu_last_frame_has_pts;
+            core->menu_previous_frame_pts = core->menu_last_frame_pts;
+            core->menu_last_frame_has_pts = true;
+            core->menu_last_frame_pts = frame_probe.pts;
+         }
       }
 
       attempts++;
@@ -831,13 +936,16 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
                label);
       }
       else
-         core->menu_frame_hold = core->menu_frame_repeat ?
-            core->menu_frame_repeat - 1u : 0u;
+      {
+         unsigned repeat = frame_repeat_for_last_decoded_frame(core);
+         core->menu_frame_hold = repeat ? repeat - 1u : 0u;
+      }
    }
    else
       deevee_video_render_placeholder(&core->video, core->frame_count, label);
 
-   draw_menu_button_overlay(core);
+   if (should_draw_menu_overlay(core))
+      draw_menu_button_overlay(core);
 
    video->pixels = core->video.pixels;
    video->width = DEEVEE_VIDEO_WIDTH;
