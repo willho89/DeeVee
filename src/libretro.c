@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEEVEE_CORE_VERSION "0.4.0-alpha"
+#define DEEVEE_CORE_VERSION "0.4.1-alpha"
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
@@ -21,6 +21,19 @@ static struct retro_log_callback logging;
 static struct deevee_core core;
 static unsigned diagnostic_frame_counter;
 static uint8_t logged_confirmed_button;
+
+static const struct retro_input_descriptor deevee_input_descriptors[] = {
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Confirm" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "Back" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X, "Home" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,
+      "Previous Chapter" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,
+      "Next Chapter" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,
+      "DVD Menu" },
+   { 0, 0, 0, 0, NULL }
+};
 
 static void deevee_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -70,15 +83,21 @@ static void deevee_update_input(void)
          deevee_button(RETRO_DEVICE_ID_JOYPAD_RIGHT) ||
          deevee_key(RETROK_RIGHT));
    deevee_core_set_button(&core, DEEVEE_NAV_CONFIRM,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_A) ||
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_B) ||
          deevee_key(RETROK_x) ||
          deevee_key(RETROK_RETURN));
    deevee_core_set_button(&core, DEEVEE_NAV_CANCEL,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_B) ||
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_A) ||
          deevee_key(RETROK_z));
    deevee_core_set_button(&core, DEEVEE_NAV_MENU,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_START) ||
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_X));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_START));
+   deevee_core_set_button(&core, DEEVEE_NAV_HOME,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_X) ||
+         deevee_key(RETROK_HOME));
+   deevee_core_set_button(&core, DEEVEE_NAV_PREVIOUS_CHAPTER,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_L));
+   deevee_core_set_button(&core, DEEVEE_NAV_NEXT_CHAPTER,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_R));
 }
 
 void retro_set_environment(retro_environment_t cb)
@@ -154,6 +173,8 @@ void retro_init(void)
       environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging);
       environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format);
       environ_cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &supports_no_game);
+      environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS,
+            (void *)deevee_input_descriptors);
    }
 
    if (!deevee_core_init(&core))

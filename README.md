@@ -2,7 +2,7 @@
 
 DeeVee is an experimental libretro core for DVD-Video playback. The goal is to load DVD `.iso` and `.chd` images in RetroArch and eventually support DVD menus, extras, navigation, video playback, subtitles, and audio through standard libretro frontends.
 
-Current version: `0.4.0-alpha`.
+Current version: `0.4.1-alpha`.
 
 This is not a feature-complete DVD player yet. It is an early playable milestone with real DVD sector access, MPEG-2 video decoding, AC3 audio decoding, basic menu button navigation, CHD support, and targeted submenu handling for the primary test disc. Many DVD VM commands, menu flows, subtitles, and compatibility cases are still incomplete.
 
@@ -37,6 +37,7 @@ Known limitations:
 ## Releases
 
 The first public checkpoint is `v0.4.0-alpha`.
+This follow-up `v0.4.1-alpha` checkpoint improves DVD menu navigation, menu audio, and non-obstructive menu selection diagnostics.
 
 For Windows RetroArch, download the release ZIP and copy:
 

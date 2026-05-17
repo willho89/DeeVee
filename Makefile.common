@@ -7,6 +7,7 @@ SOURCES_C := \
 	src/deevee_decoder.c \
 	src/deevee_disc.c \
 	src/deevee_dvd.c \
+	src/deevee_dvdnav.c \
 	src/deevee_iso.c \
 	src/deevee_nav.c \
 	src/deevee_video.c \
@@ -49,4 +50,11 @@ ifeq ($(HAVE_CHD),1)
 		-Ideps/libchdr/src -Ideps/libchdr/deps/miniz-3.1.1 \
 		-Ideps/libchdr/deps/zstd-1.5.7 \
 		-Ideps/libchdr/deps/lzma-25.01/include $(CHD_CFLAGS)
+endif
+
+ifeq ($(HAVE_DVDNAV),1)
+	DVDNAV_CFLAGS ?= $(shell pkg-config --cflags dvdnav 2>/dev/null)
+	DVDNAV_LIBS ?= $(shell pkg-config --libs dvdnav 2>/dev/null || echo -ldvdnav)
+	CFLAGS += -DHAVE_DVDNAV=1 $(DVDNAV_CFLAGS)
+	LDFLAGS += $(DVDNAV_LIBS)
 endif

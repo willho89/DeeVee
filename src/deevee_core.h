@@ -10,6 +10,7 @@
 #include "deevee_decoder.h"
 #include "deevee_disc.h"
 #include "deevee_dvd.h"
+#include "deevee_dvdnav.h"
 #include "deevee_nav.h"
 #include "deevee_video.h"
 
@@ -67,6 +68,8 @@ struct deevee_core
    struct deevee_nav nav;
    struct deevee_video video;
    struct deevee_audio audio;
+   struct deevee_dvdnav dvdnav;
+   bool dvdnav_active;
    struct deevee_video_decoder decoder;
    uint32_t *decoder_output_pixels;
    struct deevee_decoded_video_frame frame_queue[
@@ -118,6 +121,8 @@ struct deevee_core
    uint8_t menu_current_vts;
    enum deevee_dvd_menu_domain menu_domain;
    char menu_command_status[96];
+   bool menu_at_end;
+   bool menu_loop_enabled;
    bool playback_is_title;
    bool menu_last_frame_has_pts;
    int64_t menu_last_frame_pts;

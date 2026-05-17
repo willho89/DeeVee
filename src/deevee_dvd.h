@@ -311,17 +311,29 @@ enum deevee_dvd_status deevee_dvd_walk_first_menu_video_payloads(
 enum deevee_dvd_status deevee_dvd_walk_vob_video_payloads(
       struct deevee_disc *disc, const char *iso_path,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vob_packets(
+      struct deevee_disc *disc, const char *iso_path,
+      deevee_dvd_packet_callback callback, void *user_data);
 enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_packets(
+      struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
+      deevee_dvd_packet_callback callback, void *user_data);
 enum deevee_dvd_status deevee_dvd_walk_vmgm_menu_pgc_video_payloads(
       struct deevee_disc *disc, unsigned pgc_index,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vmgm_menu_pgc_packets(
+      struct deevee_disc *disc, unsigned pgc_index,
+      deevee_dvd_packet_callback callback, void *user_data);
 enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       struct deevee_dvd_menu_render_probe *probe);
 enum deevee_dvd_status deevee_dvd_probe_vmgm_menu_pgc_render_streams(
       struct deevee_disc *disc, unsigned pgc_index,
+      struct deevee_dvd_menu_render_probe *probe);
+enum deevee_dvd_status deevee_dvd_probe_vob_menu_render_streams(
+      struct deevee_disc *disc, const char *iso_path,
       struct deevee_dvd_menu_render_probe *probe);
 bool deevee_dvd_decode_playback_target_command(const uint8_t command[8],
       unsigned current_vts, enum deevee_dvd_menu_domain current_menu_domain,
@@ -340,6 +352,9 @@ enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
 enum deevee_dvd_status deevee_dvd_walk_title_pgc_packets(
       struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
       deevee_dvd_packet_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_packets_in_buffer(
+      const uint8_t *data, size_t data_size, deevee_dvd_packet_callback callback,
+      void *user_data);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif
