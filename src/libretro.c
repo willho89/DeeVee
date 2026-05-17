@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEEVEE_CORE_VERSION "0.1.0-dev"
+#define DEEVEE_CORE_VERSION "0.4.0-alpha"
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
