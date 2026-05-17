@@ -1,0 +1,15 @@
+TARGET_NAME := deevee
+
+SOURCES_C := \
+	src/libretro.c \
+	src/deevee_core.c \
+	src/deevee_content.c \
+	src/deevee_nav.c \
+	src/deevee_video.c \
+	src/deevee_audio.c
+
+INCFLAGS := -Iinclude -Isrc
+WARNFLAGS := -Wall -Wextra -Wpedantic
+CSTD := -std=c99
+
+CFLAGS += $(CSTD) $(WARNFLAGS) $(INCFLAGS)

@@ -1,0 +1,20 @@
+# Build outputs
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Local test fixtures
+tests/tmp_*/
+
+# RetroArch/local runtime files
+*.srm
+*.rtc
+*.state
+*.log
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
