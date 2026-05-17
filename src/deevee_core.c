@@ -7,6 +7,10 @@
 #define DEEVEE_MIN_MENU_VIDEO_PAYLOAD_BYTES 65536u
 #define DEEVEE_MENU_VISIBILITY_SAMPLE_FRAMES 30u
 #define DEEVEE_DEFAULT_MENU_FRAME_REPEAT 2u
+#define DEEVEE_CLOCK_TICKS_PER_SECOND 90000u
+#define DEEVEE_CLOCK_TICKS_PER_RUN 1500u
+#define DEEVEE_MIN_FRAME_DURATION_TICKS 750u
+#define DEEVEE_MAX_FRAME_DURATION_TICKS 15000u
 
 struct payload_extract_context
 {
@@ -21,14 +25,184 @@ struct packet_extract_context
 };
 
 static bool decode_next_menu_frame(struct deevee_core *core);
+static bool fill_frame_queue(struct deevee_core *core, size_t target_count);
+static void decode_audio_until_buffered(struct deevee_core *core,
+      size_t target_frames);
 static bool open_menu_decoder(struct deevee_core *core);
 static bool prepare_title_playback_from_command(struct deevee_core *core,
       const uint8_t command[8]);
+
+static bool content_is_disc_image(const struct deevee_content_info *content)
+{
+   return content && (content->type == DEEVEE_CONTENT_ISO ||
+         content->type == DEEVEE_CONTENT_CHD);
+}
 
 static uint32_t deevee_core_rgb(unsigned r, unsigned g, unsigned b)
 {
    return 0xff000000u | ((r & 0xffu) << 16) |
       ((g & 0xffu) << 8) | (b & 0xffu);
+}
+
+static unsigned fallback_frame_duration_ticks(const struct deevee_core *core)
+{
+   if (core && core->video_frame_duration_ticks)
+      return core->video_frame_duration_ticks;
+
+   return DEEVEE_DEFAULT_MENU_FRAME_REPEAT * DEEVEE_CLOCK_TICKS_PER_RUN;
+}
+
+static unsigned clamp_frame_duration_ticks(uint64_t ticks)
+{
+   if (ticks < DEEVEE_MIN_FRAME_DURATION_TICKS)
+      return DEEVEE_MIN_FRAME_DURATION_TICKS;
+   if (ticks > DEEVEE_MAX_FRAME_DURATION_TICKS)
+      return DEEVEE_MAX_FRAME_DURATION_TICKS;
+   return (unsigned)ticks;
+}
+
+static unsigned display_frame_duration_ticks(const struct deevee_core *core,
+      uint64_t ticks)
+{
+   unsigned fallback = fallback_frame_duration_ticks(core);
+   unsigned duration;
+
+   if (!ticks)
+      return fallback;
+
+   duration = clamp_frame_duration_ticks(ticks);
+
+   if (duration < fallback / 2u || duration > fallback * 2u)
+      return fallback;
+
+   return duration;
+}
+
+static unsigned display_hold_ticks_from_duration(unsigned duration)
+{
+   unsigned display_runs;
+
+   if (!duration)
+      return 0;
+
+   display_runs = (duration + (DEEVEE_CLOCK_TICKS_PER_RUN / 2u)) /
+      DEEVEE_CLOCK_TICKS_PER_RUN;
+   if (display_runs < 1u)
+      display_runs = 1u;
+
+   return (display_runs - 1u) * DEEVEE_CLOCK_TICKS_PER_RUN;
+}
+
+static unsigned frame_duration_ticks_from_frame_rate_code(uint8_t code)
+{
+   switch (code)
+   {
+      case 1: /* 24000 / 1001 */
+         return 3754u;
+      case 2: /* 24 */
+         return 3750u;
+      case 3: /* 25 */
+         return 3600u;
+      case 4: /* 30000 / 1001 */
+         return 3003u;
+      case 5: /* 30 */
+         return 3000u;
+      case 6: /* 50 */
+         return 1800u;
+      case 7: /* 60000 / 1001 */
+         return 1502u;
+      case 8: /* 60 */
+         return 1500u;
+      default:
+         return DEEVEE_DEFAULT_MENU_FRAME_REPEAT * DEEVEE_CLOCK_TICKS_PER_RUN;
+   }
+}
+
+static size_t frame_queue_index(size_t head, size_t offset)
+{
+   return (head + offset) % DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY;
+}
+
+static void reset_frame_queue(struct deevee_core *core)
+{
+   size_t i;
+
+   if (!core)
+      return;
+
+   for (i = 0; i < DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY; i++)
+   {
+      if (core->frame_queue[i].pixels)
+         memset(core->frame_queue[i].pixels, 0,
+               DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT * sizeof(uint32_t));
+      core->frame_queue[i].valid = false;
+      core->frame_queue[i].has_pts = false;
+      core->frame_queue[i].pts = 0;
+      core->frame_queue[i].display_ticks = fallback_frame_duration_ticks(core);
+      core->frame_queue[i].width = 0;
+      core->frame_queue[i].height = 0;
+      core->frame_queue[i].pixel_format = 0;
+   }
+
+   core->frame_queue_head = 0;
+   core->frame_queue_count = 0;
+   core->frame_clock_pts = 0;
+   core->frame_clock_has_pts = false;
+   core->display_frame_ticks_remaining = 0;
+   core->displayed_frames = 0;
+   core->repeated_frames = 0;
+   core->decode_underruns = 0;
+   core->queue_drops = 0;
+   core->fallback_timing_frames = 0;
+}
+
+static bool allocate_frame_queue(struct deevee_core *core)
+{
+   size_t i;
+
+   if (!core)
+      return false;
+
+   if (!core->decoder_output_pixels)
+   {
+      core->decoder_output_pixels = (uint32_t *)calloc(
+            DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT, sizeof(uint32_t));
+      if (!core->decoder_output_pixels)
+         return false;
+   }
+
+   for (i = 0; i < DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY; i++)
+   {
+      if (!core->frame_queue[i].pixels)
+      {
+         core->frame_queue[i].pixels = (uint32_t *)calloc(
+               DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT, sizeof(uint32_t));
+         if (!core->frame_queue[i].pixels)
+            return false;
+      }
+   }
+
+   reset_frame_queue(core);
+   return true;
+}
+
+static void free_frame_queue(struct deevee_core *core)
+{
+   size_t i;
+
+   if (!core)
+      return;
+
+   free(core->decoder_output_pixels);
+   core->decoder_output_pixels = NULL;
+   for (i = 0; i < DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY; i++)
+   {
+      free(core->frame_queue[i].pixels);
+      memset(&core->frame_queue[i], 0, sizeof(core->frame_queue[i]));
+   }
+
+   core->frame_queue_head = 0;
+   core->frame_queue_count = 0;
 }
 
 static void clear_menu_video(struct deevee_core *core)
@@ -39,6 +213,8 @@ static void clear_menu_video(struct deevee_core *core)
    deevee_decoder_deinit(&core->decoder);
    free(core->menu_video_payloads);
    free(core->menu_video_chunks);
+   free(core->audio_payloads);
+   free(core->audio_chunks);
    core->menu_video_payloads = NULL;
    core->menu_video_payload_size = 0;
    core->menu_video_payload_capacity = 0;
@@ -46,8 +222,21 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_video_chunk_count = 0;
    core->menu_video_chunk_capacity = 0;
    core->next_menu_video_chunk = 0;
+   core->audio_payloads = NULL;
+   core->audio_payload_size = 0;
+   core->audio_payload_capacity = 0;
+   core->audio_chunks = NULL;
+   core->audio_chunk_count = 0;
+   core->audio_chunk_capacity = 0;
+   core->next_audio_chunk = 0;
+   core->audio_payload_packets = 0;
+   deevee_audio_deinit(&core->audio);
+   deevee_audio_init(&core->audio);
    core->menu_frame_hold = 0;
    core->menu_frame_repeat = DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
+   core->video_frame_rate_code = 0;
+   core->video_frame_duration_ticks =
+      frame_duration_ticks_from_frame_rate_code(0);
    core->menu_playback_active = false;
    core->menu_playback_source[0] = '\0';
    core->menu_packets_sent = 0;
@@ -71,6 +260,7 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_last_frame_pts = 0;
    core->menu_previous_frame_has_pts = false;
    core->menu_previous_frame_pts = 0;
+   reset_frame_queue(core);
 }
 
 static bool append_menu_video_payload(struct deevee_core *core,
@@ -150,6 +340,75 @@ static bool append_menu_video_packet(struct deevee_core *core,
    return true;
 }
 
+static bool append_audio_payload(struct deevee_core *core,
+      const uint8_t *payload, size_t payload_size)
+{
+   uint8_t *new_payloads;
+   struct deevee_audio_payload_chunk *new_chunks;
+   size_t new_payload_capacity;
+   size_t new_chunk_capacity;
+
+   if (!core || !payload || !payload_size)
+      return false;
+
+   if (core->audio_payload_size + payload_size >
+         core->audio_payload_capacity)
+   {
+      new_payload_capacity = core->audio_payload_capacity ?
+         core->audio_payload_capacity * 2u : 4096u;
+      while (new_payload_capacity < core->audio_payload_size + payload_size)
+         new_payload_capacity *= 2u;
+
+      new_payloads = (uint8_t *)realloc(core->audio_payloads,
+            new_payload_capacity);
+      if (!new_payloads)
+         return false;
+
+      core->audio_payloads = new_payloads;
+      core->audio_payload_capacity = new_payload_capacity;
+   }
+
+   if (core->audio_chunk_count + 1u > core->audio_chunk_capacity)
+   {
+      new_chunk_capacity = core->audio_chunk_capacity ?
+         core->audio_chunk_capacity * 2u : 16u;
+      new_chunks = (struct deevee_audio_payload_chunk *)realloc(
+            core->audio_chunks, new_chunk_capacity *
+            sizeof(*core->audio_chunks));
+      if (!new_chunks)
+         return false;
+
+      core->audio_chunks = new_chunks;
+      core->audio_chunk_capacity = new_chunk_capacity;
+   }
+
+   memcpy(core->audio_payloads + core->audio_payload_size, payload,
+         payload_size);
+   core->audio_chunks[core->audio_chunk_count].offset =
+      core->audio_payload_size;
+   core->audio_chunks[core->audio_chunk_count].size = payload_size;
+   core->audio_payload_size += payload_size;
+   core->audio_chunk_count++;
+   core->audio_payload_packets++;
+   return true;
+}
+
+static bool append_ac3_packet(struct deevee_core *core,
+      const struct deevee_dvd_packet *packet)
+{
+   const uint8_t *payload;
+
+   if (!core || !packet || packet->stream_id != 0xbd ||
+         !packet->payload || packet->payload_size <= 4u)
+      return true;
+
+   payload = packet->payload;
+   if (payload[0] < 0x80 || payload[0] > 0x87)
+      return true;
+
+   return append_audio_payload(core, payload + 4u, packet->payload_size - 4u);
+}
+
 static unsigned menu_repeat_from_frame_rate_code(uint8_t frame_rate_code)
 {
    switch (frame_rate_code)
@@ -178,6 +437,9 @@ static void detect_menu_frame_repeat(struct deevee_core *core)
       return;
 
    core->menu_frame_repeat = DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
+   core->video_frame_rate_code = 0;
+   core->video_frame_duration_ticks =
+      frame_duration_ticks_from_frame_rate_code(0);
 
    for (chunk_index = 0; chunk_index < core->menu_video_chunk_count;
          chunk_index++)
@@ -192,6 +454,10 @@ static void detect_menu_frame_repeat(struct deevee_core *core)
          if (payload[i] == 0x00 && payload[i + 1] == 0x00 &&
                payload[i + 2] == 0x01 && payload[i + 3] == 0xb3)
          {
+            core->video_frame_rate_code = payload[i + 7] & 0x0fu;
+            core->video_frame_duration_ticks =
+               frame_duration_ticks_from_frame_rate_code(
+                  core->video_frame_rate_code);
             core->menu_frame_repeat =
                menu_repeat_from_frame_rate_code(payload[i + 7] & 0x0fu);
             return;
@@ -208,6 +474,7 @@ static bool reset_menu_decoder_position(struct deevee_core *core)
    if (!open_menu_decoder(core))
       return false;
 
+   reset_frame_queue(core);
    core->next_menu_video_chunk = 0;
    core->menu_frame_hold = 0;
    core->menu_packets_sent = 0;
@@ -219,6 +486,8 @@ static bool reset_menu_decoder_position(struct deevee_core *core)
    core->menu_last_frame_pts = 0;
    core->menu_previous_frame_has_pts = false;
    core->menu_previous_frame_pts = 0;
+   core->video_frame_duration_ticks =
+      frame_duration_ticks_from_frame_rate_code(core->video_frame_rate_code);
    return true;
 }
 
@@ -381,32 +650,105 @@ static void draw_menu_button_overlay(struct deevee_core *core)
    }
 }
 
-static unsigned frame_repeat_for_last_decoded_frame(const struct deevee_core *core)
-{
-   uint64_t delta;
-   unsigned repeat;
-
-   if (!core || !core->playback_is_title ||
-         !core->menu_last_frame_has_pts ||
-         !core->menu_previous_frame_has_pts ||
-         core->menu_last_frame_pts <= core->menu_previous_frame_pts)
-      return core && core->menu_frame_repeat ? core->menu_frame_repeat :
-         DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
-
-   delta = (uint64_t)(core->menu_last_frame_pts -
-      core->menu_previous_frame_pts);
-   repeat = (unsigned)((delta * DEEVEE_VIDEO_FPS +
-         45000u) / 90000u);
-   if (repeat < 1u)
-      repeat = 1u;
-   if (repeat > 10u)
-      repeat = 10u;
-   return repeat;
-}
-
 static bool should_draw_menu_overlay(const struct deevee_core *core)
 {
    return core && !core->playback_is_title;
+}
+
+static void enqueue_decoded_frame(struct deevee_video_decoder *decoder,
+      const struct deevee_decoder_frame_probe *frame, void *user_data)
+{
+   struct deevee_core *core = (struct deevee_core *)user_data;
+   struct deevee_decoded_video_frame *queued;
+   size_t queue_index;
+   unsigned fallback_ticks;
+
+   if (!decoder || !frame || !core || !decoder->output_pixels)
+      return;
+
+   if (core->frame_queue_count >= DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY)
+   {
+      core->frame_queue_head = frame_queue_index(core->frame_queue_head, 1u);
+      core->frame_queue_count--;
+      core->queue_drops++;
+   }
+
+   fallback_ticks = fallback_frame_duration_ticks(core);
+   if (core->frame_queue_count)
+   {
+      struct deevee_decoded_video_frame *previous =
+         &core->frame_queue[frame_queue_index(core->frame_queue_head,
+               core->frame_queue_count - 1u)];
+
+      if (previous->valid && previous->has_pts && frame->has_pts &&
+            frame->pts > previous->pts)
+         previous->display_ticks = display_frame_duration_ticks(core,
+               (uint64_t)(frame->pts - previous->pts));
+      else if (previous->valid)
+      {
+         previous->display_ticks = fallback_frame_duration_ticks(core);
+         core->fallback_timing_frames++;
+      }
+   }
+
+   queue_index = frame_queue_index(core->frame_queue_head,
+         core->frame_queue_count);
+   queued = &core->frame_queue[queue_index];
+   memcpy(queued->pixels, decoder->output_pixels,
+         DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT * sizeof(uint32_t));
+   queued->valid = true;
+   queued->has_pts = frame->has_pts;
+   queued->pts = frame->pts;
+   queued->display_ticks = fallback_ticks;
+   queued->width = frame->width;
+   queued->height = frame->height;
+   queued->pixel_format = frame->pixel_format;
+
+   if (!frame->has_pts)
+      core->fallback_timing_frames++;
+
+   core->frame_queue_count++;
+}
+
+static bool display_next_queued_frame(struct deevee_core *core)
+{
+   struct deevee_decoded_video_frame *queued;
+
+   if (!core || !core->frame_queue_count)
+      return false;
+
+   queued = &core->frame_queue[core->frame_queue_head];
+   if (!queued->valid || !queued->pixels)
+      return false;
+
+   memcpy(core->video.pixels, queued->pixels,
+         DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT * sizeof(uint32_t));
+   core->menu_last_frame_width = queued->width;
+   core->menu_last_frame_height = queued->height;
+   core->menu_last_pixel_format = queued->pixel_format;
+   core->menu_previous_frame_has_pts = core->menu_last_frame_has_pts;
+   core->menu_previous_frame_pts = core->menu_last_frame_pts;
+   core->menu_last_frame_has_pts = queued->has_pts;
+   core->menu_last_frame_pts = queued->pts;
+   core->display_frame_ticks_remaining =
+      display_hold_ticks_from_duration(queued->display_ticks);
+   core->displayed_frames++;
+
+   if (queued->has_pts)
+   {
+      core->frame_clock_pts = queued->pts;
+      core->frame_clock_has_pts = true;
+   }
+   else
+   {
+      core->frame_clock_pts += fallback_frame_duration_ticks(core);
+      core->frame_clock_has_pts = false;
+   }
+
+   queued->valid = false;
+   core->frame_queue_head = frame_queue_index(core->frame_queue_head, 1u);
+   core->frame_queue_count--;
+   return true;
 }
 
 static bool extract_payload_callback(const uint8_t *payload,
@@ -429,6 +771,12 @@ static bool extract_video_packet_callback(
    if (!context || !packet)
       return false;
 
+   if (!append_ac3_packet(context->core, packet))
+   {
+      context->ok = false;
+      return false;
+   }
+
    if (packet->stream_id < 0xe0 || packet->stream_id > 0xef)
       return true;
 
@@ -447,9 +795,11 @@ static bool open_menu_decoder(struct deevee_core *core)
    if (deevee_decoder_open_mpeg2(&core->decoder) != DEEVEE_DECODER_OK)
       return false;
    if (deevee_decoder_set_xrgb8888_output(&core->decoder,
-            core->video.pixels, DEEVEE_VIDEO_WIDTH, DEEVEE_VIDEO_HEIGHT,
+            core->decoder_output_pixels, DEEVEE_VIDEO_WIDTH, DEEVEE_VIDEO_HEIGHT,
             core->video.pitch) != DEEVEE_DECODER_OK)
       return false;
+   deevee_decoder_set_frame_callback(&core->decoder, enqueue_decoded_frame,
+         core);
 
    return true;
 }
@@ -462,7 +812,7 @@ static bool prepare_menu_playback(struct deevee_core *core,
    struct payload_extract_context extract_context;
    bool prepared = false;
 
-   if (!core || !content || content->type != DEEVEE_CONTENT_ISO)
+   if (!core || !content_is_disc_image(content))
       return false;
 
    clear_menu_video(core);
@@ -509,7 +859,7 @@ static bool prepare_menu_playback_from_vob_path(struct deevee_core *core,
    struct payload_extract_context extract_context;
    bool prepared = false;
 
-   if (!core || !content || !iso_path || content->type != DEEVEE_CONTENT_ISO)
+   if (!core || !content_is_disc_image(content) || !iso_path)
       return false;
 
    clear_menu_video(core);
@@ -554,7 +904,7 @@ static bool prepare_menu_playback_from_vts_pgc(struct deevee_core *core,
    struct deevee_dvd_menu_render_probe render_probe;
    bool prepared = false;
 
-   if (!core || !content || content->type != DEEVEE_CONTENT_ISO)
+   if (!core || !content_is_disc_image(content))
       return false;
 
    clear_menu_video(core);
@@ -610,7 +960,7 @@ static bool prepare_title_playback_from_command(struct deevee_core *core,
    bool prepared = false;
    bool cleared_video = false;
 
-   if (!core || !command || core->content.type != DEEVEE_CONTENT_ISO)
+   if (!core || !command || !content_is_disc_image(&core->content))
       return false;
 
    memcpy(command_copy, command, sizeof(command_copy));
@@ -654,6 +1004,7 @@ static bool prepare_title_playback_from_command(struct deevee_core *core,
          "VTS_%02u_TITLE_%02u_PGC_%02u", title_pgc.vts_number,
          title_pgc.vts_title_number, title_pgc.pgc_number);
    core->menu_playback_source[sizeof(core->menu_playback_source) - 1] = '\0';
+   decode_audio_until_buffered(core, DEEVEE_AUDIO_FRAMES_PER_RUN * 6u);
    prepared = true;
 
 end_disc:
@@ -751,7 +1102,7 @@ static bool prepare_any_menu_playback(struct deevee_core *core,
    return false;
 }
 
-static bool decode_next_menu_frame(struct deevee_core *core)
+static bool fill_frame_queue(struct deevee_core *core, size_t target_count)
 {
    struct deevee_decoder_frame_probe frame_probe;
    size_t attempts = 0;
@@ -761,7 +1112,7 @@ static bool decode_next_menu_frame(struct deevee_core *core)
 
    memset(&frame_probe, 0, sizeof(frame_probe));
 
-   while (!frame_probe.got_frame &&
+   while (core->frame_queue_count < target_count &&
          attempts < core->menu_video_chunk_count * 2u)
    {
       const struct deevee_video_payload_chunk *chunk;
@@ -774,26 +1125,10 @@ static bool decode_next_menu_frame(struct deevee_core *core)
          uint32_t frames_before_flush = frame_probe.frames_decoded;
 
          (void)deevee_decoder_flush_mpeg2(&core->decoder, &frame_probe);
-         if (frame_probe.got_frame)
-         {
-            core->menu_frames_decoded +=
-               frame_probe.frames_decoded - frames_before_flush;
-            if (frame_probe.frames_decoded > frames_before_flush)
-            {
-               core->menu_last_frame_width = frame_probe.width;
-               core->menu_last_frame_height = frame_probe.height;
-               core->menu_last_pixel_format = frame_probe.pixel_format;
-               if (frame_probe.has_pts)
-               {
-                  core->menu_previous_frame_has_pts =
-                     core->menu_last_frame_has_pts;
-                  core->menu_previous_frame_pts = core->menu_last_frame_pts;
-                  core->menu_last_frame_has_pts = true;
-                  core->menu_last_frame_pts = frame_probe.pts;
-               }
-            }
+         core->menu_frames_decoded +=
+            frame_probe.frames_decoded - frames_before_flush;
+         if (core->frame_queue_count >= target_count)
             break;
-         }
          if (!open_menu_decoder(core))
             return false;
          core->next_menu_video_chunk = 0;
@@ -818,24 +1153,60 @@ static bool decode_next_menu_frame(struct deevee_core *core)
 
       core->menu_packets_sent += frame_probe.packets_sent - packets_before;
       core->menu_frames_decoded += frame_probe.frames_decoded - frames_before;
-      if (frame_probe.got_frame && frame_probe.frames_decoded > frames_before)
-      {
-         core->menu_last_frame_width = frame_probe.width;
-         core->menu_last_frame_height = frame_probe.height;
-         core->menu_last_pixel_format = frame_probe.pixel_format;
-         if (frame_probe.has_pts)
-         {
-            core->menu_previous_frame_has_pts = core->menu_last_frame_has_pts;
-            core->menu_previous_frame_pts = core->menu_last_frame_pts;
-            core->menu_last_frame_has_pts = true;
-            core->menu_last_frame_pts = frame_probe.pts;
-         }
-      }
 
       attempts++;
    }
 
-   return frame_probe.got_frame;
+   return core->frame_queue_count > 0;
+}
+
+static bool decode_next_menu_frame(struct deevee_core *core)
+{
+   size_t target_count;
+
+   if (!core)
+      return false;
+
+   target_count = core->playback_is_title ? 4u : 2u;
+   if (core->frame_queue_count < target_count)
+      (void)fill_frame_queue(core, target_count);
+
+   if (display_next_queued_frame(core))
+      return true;
+
+   core->decode_underruns++;
+   return fill_frame_queue(core, 1u) && display_next_queued_frame(core);
+}
+
+static void decode_audio_until_buffered(struct deevee_core *core,
+      size_t target_frames)
+{
+   size_t attempts = 0;
+
+   if (!core || !core->audio_chunk_count)
+      return;
+
+   while (deevee_audio_buffered_frames(&core->audio) < target_frames &&
+         attempts < core->audio_chunk_count)
+   {
+      const struct deevee_audio_payload_chunk *chunk;
+      enum deevee_audio_status status;
+
+      if (core->next_audio_chunk >= core->audio_chunk_count)
+      {
+         deevee_audio_deinit(&core->audio);
+         deevee_audio_init(&core->audio);
+         core->next_audio_chunk = 0;
+      }
+
+      chunk = &core->audio_chunks[core->next_audio_chunk++];
+      status = deevee_audio_decode_ac3_payload(&core->audio,
+            core->audio_payloads + chunk->offset, chunk->size);
+      if (status != DEEVEE_AUDIO_OK)
+         core->audio.decode_errors++;
+
+      attempts++;
+   }
 }
 
 bool deevee_core_init(struct deevee_core *core)
@@ -849,6 +1220,12 @@ bool deevee_core_init(struct deevee_core *core)
 
    if (!deevee_video_init(&core->video))
       return false;
+   if (!allocate_frame_queue(core))
+   {
+      free_frame_queue(core);
+      deevee_video_deinit(&core->video);
+      return false;
+   }
 
    core->initialized = true;
    return true;
@@ -860,6 +1237,7 @@ void deevee_core_deinit(struct deevee_core *core)
       return;
 
    clear_menu_video(core);
+   free_frame_queue(core);
    deevee_video_deinit(&core->video);
    memset(core, 0, sizeof(*core));
 }
@@ -927,18 +1305,21 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
 
    if (core->menu_playback_active)
    {
-      if (core->menu_frame_hold)
-         core->menu_frame_hold--;
+      if (core->display_frame_ticks_remaining)
+      {
+         if (core->display_frame_ticks_remaining > DEEVEE_CLOCK_TICKS_PER_RUN)
+            core->display_frame_ticks_remaining -= DEEVEE_CLOCK_TICKS_PER_RUN;
+         else
+            core->display_frame_ticks_remaining = 0;
+         core->repeated_frames++;
+         if (core->frame_queue_count < (core->playback_is_title ? 4u : 2u))
+            (void)fill_frame_queue(core, core->playback_is_title ? 4u : 2u);
+      }
       else if (!decode_next_menu_frame(core))
       {
          core->menu_playback_active = false;
          deevee_video_render_placeholder(&core->video, core->frame_count,
                label);
-      }
-      else
-      {
-         unsigned repeat = frame_repeat_for_last_decoded_frame(core);
-         core->menu_frame_hold = repeat ? repeat - 1u : 0u;
       }
    }
    else
@@ -951,7 +1332,8 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
    video->width = DEEVEE_VIDEO_WIDTH;
    video->height = DEEVEE_VIDEO_HEIGHT;
    video->pitch = core->video.pitch;
-   audio->samples = deevee_audio_silence(&core->audio, &audio->frames);
+   decode_audio_until_buffered(core, DEEVEE_AUDIO_FRAMES_PER_RUN * 3u);
+   audio->samples = deevee_audio_read(&core->audio, &audio->frames);
 
    core->frame_count++;
 }
@@ -995,6 +1377,86 @@ uint64_t deevee_core_menu_packets_sent(const struct deevee_core *core)
 uint64_t deevee_core_menu_frames_decoded(const struct deevee_core *core)
 {
    return core ? core->menu_frames_decoded : 0;
+}
+
+uint64_t deevee_core_displayed_frames(const struct deevee_core *core)
+{
+   return core ? core->displayed_frames : 0;
+}
+
+uint64_t deevee_core_repeated_frames(const struct deevee_core *core)
+{
+   return core ? core->repeated_frames : 0;
+}
+
+uint64_t deevee_core_decode_underruns(const struct deevee_core *core)
+{
+   return core ? core->decode_underruns : 0;
+}
+
+uint64_t deevee_core_queued_frames(const struct deevee_core *core)
+{
+   return core ? (uint64_t)core->frame_queue_count : 0;
+}
+
+uint64_t deevee_core_queue_drops(const struct deevee_core *core)
+{
+   return core ? core->queue_drops : 0;
+}
+
+uint64_t deevee_core_fallback_timing_frames(const struct deevee_core *core)
+{
+   return core ? core->fallback_timing_frames : 0;
+}
+
+uint64_t deevee_core_audio_payload_count(const struct deevee_core *core)
+{
+   return core ? (uint64_t)core->audio_chunk_count : 0;
+}
+
+uint64_t deevee_core_audio_packets_sent(const struct deevee_core *core)
+{
+   return core ? deevee_audio_packets_sent(&core->audio) : 0;
+}
+
+uint64_t deevee_core_audio_decoded_frames(const struct deevee_core *core)
+{
+   return core ? deevee_audio_decoded_frames(&core->audio) : 0;
+}
+
+uint64_t deevee_core_audio_buffered_frames(const struct deevee_core *core)
+{
+   return core ? (uint64_t)deevee_audio_buffered_frames(&core->audio) : 0;
+}
+
+uint64_t deevee_core_audio_decode_errors(const struct deevee_core *core)
+{
+   return core ? deevee_audio_decode_errors(&core->audio) : 0;
+}
+
+uint64_t deevee_core_audio_underruns(const struct deevee_core *core)
+{
+   return core ? deevee_audio_underruns(&core->audio) : 0;
+}
+
+unsigned deevee_core_audio_last_sample_rate(const struct deevee_core *core)
+{
+   return core ? deevee_audio_last_sample_rate(&core->audio) : 0;
+}
+
+unsigned deevee_core_audio_last_channels(const struct deevee_core *core)
+{
+   return core ? deevee_audio_last_channels(&core->audio) : 0;
+}
+
+unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core)
+{
+   return core ? core->video_frame_rate_code : 0;
+}
+
+unsigned deevee_core_video_frame_duration_ticks(const struct deevee_core *core)
+{
+   return core ? core->video_frame_duration_ticks : 0;
 }
 
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core)

@@ -107,6 +107,16 @@ enum deevee_decoder_status deevee_decoder_set_xrgb8888_output(
    return DEEVEE_DECODER_OK;
 }
 
+void deevee_decoder_set_frame_callback(struct deevee_video_decoder *decoder,
+      deevee_decoder_frame_callback callback, void *user_data)
+{
+   if (!decoder)
+      return;
+
+   decoder->frame_callback = callback;
+   decoder->frame_callback_user_data = user_data;
+}
+
 #if HAVE_FFMPEG
 static enum deevee_decoder_status copy_frame_to_output(
       struct deevee_video_decoder *decoder, const AVFrame *frame)
@@ -177,11 +187,16 @@ static enum deevee_decoder_status receive_available_frames(
       probe->width = (unsigned)frame->width;
       probe->height = (unsigned)frame->height;
       probe->pixel_format = frame->format;
+      probe->has_pts = false;
+      probe->pts = 0;
       if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
       {
          probe->has_pts = true;
          probe->pts = frame->best_effort_timestamp;
       }
+      if (decoder->frame_callback)
+         decoder->frame_callback(decoder, probe,
+               decoder->frame_callback_user_data);
       av_frame_unref(frame);
    }
 

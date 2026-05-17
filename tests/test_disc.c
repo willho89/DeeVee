@@ -535,8 +535,13 @@ int main(void)
    deevee_disc_close(&disc);
 
    ok = ok && deevee_content_probe("tests/tmp_disc_probe/sample.chd", &content);
+#if HAVE_CHD
+   ok = ok && expect_status(deevee_disc_open(&disc, &content),
+         DEEVEE_DISC_ERROR_OPEN_FAILED, "open invalid chd");
+#else
    ok = ok && expect_status(deevee_disc_open(&disc, &content),
          DEEVEE_DISC_ERROR_UNSUPPORTED, "open chd");
+#endif
    deevee_disc_close(&disc);
 
    cleanup_fixture();

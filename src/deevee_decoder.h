@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct deevee_video_decoder;
+
 enum deevee_decoder_status
 {
    DEEVEE_DECODER_OK = 0,
@@ -14,20 +16,6 @@ enum deevee_decoder_status
    DEEVEE_DECODER_ERROR_OPEN_FAILED,
    DEEVEE_DECODER_ERROR_ALLOCATION_FAILED,
    DEEVEE_DECODER_ERROR_DECODE_FAILED
-};
-
-struct deevee_video_decoder
-{
-   bool initialized;
-   bool opened;
-   const char *backend_name;
-   void *context;
-   void *parser;
-   uint32_t *output_pixels;
-   unsigned output_width;
-   unsigned output_height;
-   size_t output_pitch;
-   bool output_ready;
 };
 
 struct deevee_decoder_frame_probe
@@ -42,6 +30,26 @@ struct deevee_decoder_frame_probe
    int64_t pts;
 };
 
+typedef void (*deevee_decoder_frame_callback)(
+      struct deevee_video_decoder *decoder,
+      const struct deevee_decoder_frame_probe *frame, void *user_data);
+
+struct deevee_video_decoder
+{
+   bool initialized;
+   bool opened;
+   const char *backend_name;
+   void *context;
+   void *parser;
+   uint32_t *output_pixels;
+   unsigned output_width;
+   unsigned output_height;
+   size_t output_pitch;
+   bool output_ready;
+   deevee_decoder_frame_callback frame_callback;
+   void *frame_callback_user_data;
+};
+
 enum deevee_decoder_status deevee_decoder_init(
       struct deevee_video_decoder *decoder);
 void deevee_decoder_deinit(struct deevee_video_decoder *decoder);
@@ -50,6 +58,8 @@ enum deevee_decoder_status deevee_decoder_open_mpeg2(
 enum deevee_decoder_status deevee_decoder_set_xrgb8888_output(
       struct deevee_video_decoder *decoder, uint32_t *pixels,
       unsigned width, unsigned height, size_t pitch);
+void deevee_decoder_set_frame_callback(struct deevee_video_decoder *decoder,
+      deevee_decoder_frame_callback callback, void *user_data);
 enum deevee_decoder_status deevee_decoder_decode_mpeg2_payload(
       struct deevee_video_decoder *decoder, const uint8_t *payload,
       size_t payload_size, struct deevee_decoder_frame_probe *probe);

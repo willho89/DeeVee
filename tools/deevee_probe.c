@@ -1,12 +1,22 @@
 #include "deevee_content.h"
+#include "deevee_audio.h"
 #include "deevee_decoder.h"
 #include "deevee_disc.h"
 #include "deevee_dvd.h"
 #include "deevee_iso.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+#ifndef HAVE_CHD
+#define HAVE_CHD 0
+#endif
+
+#if HAVE_CHD
+#include <libchdr/chd.h>
+#endif
 
 #ifdef _WIN32
 #define probe_stat_type struct _stati64
@@ -69,6 +79,15 @@ struct timed_decode_probe_context
    uint32_t payload_bytes;
    uint32_t printed_frame_pts;
    uint32_t decode_error_count;
+};
+
+struct audio_probe_context
+{
+   struct deevee_audio audio;
+   enum deevee_audio_status status;
+   uint32_t ac3_payloads;
+   uint32_t ac3_payload_bytes;
+   uint32_t skipped_packets;
 };
 
 static bool decode_payload_callback(const uint8_t *payload,
@@ -165,6 +184,39 @@ static bool timed_decode_packet_callback(
 
    return context->status == DEEVEE_DECODER_OK &&
       context->probe->frames_decoded < 16u;
+}
+
+static bool audio_probe_packet_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
+{
+   struct audio_probe_context *context =
+      (struct audio_probe_context *)user_data;
+
+   if (!packet || !context)
+      return false;
+
+   if (packet->stream_id != 0xbd || !packet->payload ||
+         packet->payload_size <= 4u)
+      return true;
+
+   if (packet->payload[0] < 0x80 || packet->payload[0] > 0x87)
+   {
+      context->skipped_packets++;
+      return true;
+   }
+
+   context->status = deevee_audio_decode_ac3_payload(&context->audio,
+         packet->payload + 4u, packet->payload_size - 4u);
+   context->ac3_payloads++;
+   context->ac3_payload_bytes += (uint32_t)(packet->payload_size - 4u);
+   if (context->status != DEEVEE_AUDIO_OK)
+   {
+      context->audio.decode_errors++;
+      return context->ac3_payloads < 128u;
+   }
+
+   return deevee_audio_decoded_frames(&context->audio) <
+      DEEVEE_AUDIO_SAMPLE_RATE;
 }
 
 static void print_menu_vob_decode_probe(struct deevee_disc *disc,
@@ -340,6 +392,45 @@ static void print_title_packet_probe(struct deevee_disc *disc,
          yes_no(context.pts_monotonic));
 }
 
+static void print_title_audio_probe(struct deevee_disc *disc,
+      const struct deevee_dvd_title_pgc *title_pgc)
+{
+   struct audio_probe_context context;
+   enum deevee_dvd_status status;
+
+   memset(&context, 0, sizeof(context));
+   deevee_audio_init(&context.audio);
+   context.status = DEEVEE_AUDIO_OK;
+
+   status = deevee_dvd_walk_title_pgc_packets(disc, title_pgc,
+         audio_probe_packet_callback, &context);
+
+   printf("  resolved_title_audio_probe_status: %s\n",
+         deevee_dvd_status_name(status));
+   printf("  resolved_title_audio_decode_status: %d\n",
+         (int)context.status);
+   printf("  resolved_title_audio_ac3_payloads: %u\n",
+         context.ac3_payloads);
+   printf("  resolved_title_audio_ac3_payload_bytes: %u\n",
+         context.ac3_payload_bytes);
+   printf("  resolved_title_audio_packets_sent: %llu\n",
+         (unsigned long long)deevee_audio_packets_sent(&context.audio));
+   printf("  resolved_title_audio_frames: %llu\n",
+         (unsigned long long)deevee_audio_decoded_frames(&context.audio));
+   printf("  resolved_title_audio_buffered_frames: %u\n",
+         (unsigned)deevee_audio_buffered_frames(&context.audio));
+   printf("  resolved_title_audio_decode_errors: %llu\n",
+         (unsigned long long)deevee_audio_decode_errors(&context.audio));
+   printf("  resolved_title_audio_sample_rate: %u\n",
+         deevee_audio_last_sample_rate(&context.audio));
+   printf("  resolved_title_audio_channels: %u\n",
+         deevee_audio_last_channels(&context.audio));
+   printf("  resolved_title_audio_skipped_packets: %u\n",
+         context.skipped_packets);
+
+   deevee_audio_deinit(&context.audio);
+}
+
 static void print_disc_probe(const struct deevee_content_info *info)
 {
    struct deevee_disc disc;
@@ -349,6 +440,65 @@ static void print_disc_probe(const struct deevee_content_info *info)
    deevee_disc_init(&disc);
    status = deevee_disc_open(&disc, info);
    printf("  reader_status: %s\n", deevee_disc_status_name(status));
+
+#if HAVE_CHD
+   if (info && info->type == DEEVEE_CONTENT_CHD)
+   {
+      chd_header header;
+      chd_error chd_status = chd_read_header(info->path, &header);
+
+      printf("  chd_header_status: %s\n", chd_error_string(chd_status));
+      if (chd_status == CHDERR_NONE)
+      {
+         chd_file *chd = NULL;
+         chd_error open_status;
+
+         printf("  chd_version: %u\n", header.version);
+         printf("  chd_hunk_bytes: %u\n", header.hunkbytes);
+         printf("  chd_total_hunks: %u\n", header.totalhunks);
+         printf("  chd_logical_bytes: %llu\n",
+               (unsigned long long)header.logicalbytes);
+         printf("  chd_unit_bytes: %u\n", header.unitbytes);
+         printf("  chd_unit_count: %llu\n",
+               (unsigned long long)header.unitcount);
+
+         open_status = chd_open(info->path, CHD_OPEN_READ, NULL, &chd);
+         if (open_status == CHDERR_NONE && header.unitbytes &&
+               header.hunkbytes >= header.unitbytes)
+         {
+            uint32_t units_per_hunk = header.hunkbytes / header.unitbytes;
+            uint32_t hunk = 16u / units_per_hunk;
+            uint32_t unit = 16u % units_per_hunk;
+            uint8_t *hunk_data = (uint8_t *)malloc(header.hunkbytes);
+
+            if (hunk_data && chd_read(chd, hunk, hunk_data) == CHDERR_NONE)
+            {
+               uint32_t offset;
+               int found = 0;
+               const uint8_t *unit_data = hunk_data +
+                  (size_t)unit * header.unitbytes;
+
+               for (offset = 0; offset + 5u <= header.unitbytes; offset++)
+               {
+                  if (memcmp(unit_data + offset, "CD001", 5) == 0)
+                  {
+                     printf("  chd_sector16_cd001_offset: %u\n", offset);
+                     found = 1;
+                  }
+               }
+
+               if (!found)
+                  printf("  chd_sector16_cd001_offset: missing\n");
+            }
+
+            free(hunk_data);
+         }
+
+         if (chd)
+            chd_close(chd);
+      }
+   }
+#endif
 
    if (status == DEEVEE_DISC_OK)
    {
@@ -882,6 +1032,7 @@ static void print_disc_probe(const struct deevee_content_info *info)
                                  title_pgc.sector_count);
                            print_title_packet_probe(&disc, &title_pgc);
                            print_title_decode_probe(&disc, &title_pgc);
+                           print_title_audio_probe(&disc, &title_pgc);
                         }
                      }
                   }

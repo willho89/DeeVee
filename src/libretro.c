@@ -44,23 +44,38 @@ static bool deevee_button(unsigned id)
    return input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, id) != 0;
 }
 
+static bool deevee_key(unsigned id)
+{
+   if (!input_state_cb)
+      return false;
+
+   return input_state_cb(0, RETRO_DEVICE_KEYBOARD, 0, id) != 0;
+}
+
 static void deevee_update_input(void)
 {
    if (input_poll_cb)
       input_poll_cb();
 
    deevee_core_set_button(&core, DEEVEE_NAV_UP,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_UP));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_UP) ||
+         deevee_key(RETROK_UP));
    deevee_core_set_button(&core, DEEVEE_NAV_DOWN,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_DOWN));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_DOWN) ||
+         deevee_key(RETROK_DOWN));
    deevee_core_set_button(&core, DEEVEE_NAV_LEFT,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_LEFT));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_LEFT) ||
+         deevee_key(RETROK_LEFT));
    deevee_core_set_button(&core, DEEVEE_NAV_RIGHT,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_RIGHT));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_RIGHT) ||
+         deevee_key(RETROK_RIGHT));
    deevee_core_set_button(&core, DEEVEE_NAV_CONFIRM,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_A));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_A) ||
+         deevee_key(RETROK_x) ||
+         deevee_key(RETROK_RETURN));
    deevee_core_set_button(&core, DEEVEE_NAV_CANCEL,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_B));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_B) ||
+         deevee_key(RETROK_z));
    deevee_core_set_button(&core, DEEVEE_NAV_MENU,
          deevee_button(RETRO_DEVICE_ID_JOYPAD_START) ||
          deevee_button(RETRO_DEVICE_ID_JOYPAD_X));
@@ -181,13 +196,18 @@ bool retro_load_game(const struct retro_game_info *game)
          deevee_core_loaded_content_type(&core));
    deevee_log(RETRO_LOG_INFO,
          "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
-         "decoded_frames=%llu, frame=%ux%u, pixfmt=%d, buttons=%u, "
-         "active=%u.\n",
+         "audio_payloads=%llu, decoded_frames=%llu, queued=%llu, "
+         "rate_code=%u frame_ticks=%u, frame=%ux%u, pixfmt=%d, "
+         "buttons=%u, active=%u.\n",
          deevee_core_menu_playback_active(&core) ? "active" : "inactive",
          deevee_core_menu_playback_source(&core),
          (unsigned)deevee_core_menu_payload_count(&core),
          (unsigned)deevee_core_menu_payload_bytes(&core),
+         (unsigned long long)deevee_core_audio_payload_count(&core),
          (unsigned long long)deevee_core_menu_frames_decoded(&core),
+         (unsigned long long)deevee_core_queued_frames(&core),
+         deevee_core_video_frame_rate_code(&core),
+         deevee_core_video_frame_duration_ticks(&core),
          deevee_core_menu_last_frame_width(&core),
          deevee_core_menu_last_frame_height(&core),
          deevee_core_menu_last_pixel_format(&core),
@@ -264,17 +284,38 @@ void retro_run(void)
          diagnostic_frame_counter % 120u == 0u)
       deevee_log(RETRO_LOG_INFO,
             "DeeVee: run menu=%s source=%s packets=%llu frames=%llu "
-            "frame=%ux%u pixfmt=%d buttons=%u active=%u confirmed=%u.\n",
+            "displayed=%llu queued=%llu repeated=%llu underruns=%llu "
+            "drops=%llu fallback=%llu rate_code=%u frame_ticks=%u "
+            "frame=%ux%u pixfmt=%d buttons=%u "
+            "active=%u confirmed=%u audio_payloads=%llu audio_packets=%llu "
+            "audio_frames=%llu audio_buffer=%llu audio_errors=%llu "
+            "audio_underruns=%llu audio_rate=%u audio_channels=%u.\n",
             deevee_core_menu_playback_active(&core) ? "active" : "inactive",
             deevee_core_menu_playback_source(&core),
             (unsigned long long)deevee_core_menu_packets_sent(&core),
             (unsigned long long)deevee_core_menu_frames_decoded(&core),
+            (unsigned long long)deevee_core_displayed_frames(&core),
+            (unsigned long long)deevee_core_queued_frames(&core),
+            (unsigned long long)deevee_core_repeated_frames(&core),
+            (unsigned long long)deevee_core_decode_underruns(&core),
+            (unsigned long long)deevee_core_queue_drops(&core),
+            (unsigned long long)deevee_core_fallback_timing_frames(&core),
+            deevee_core_video_frame_rate_code(&core),
+            deevee_core_video_frame_duration_ticks(&core),
             deevee_core_menu_last_frame_width(&core),
             deevee_core_menu_last_frame_height(&core),
             deevee_core_menu_last_pixel_format(&core),
             (unsigned)deevee_core_menu_button_count(&core),
             (unsigned)deevee_core_menu_active_button(&core),
-            (unsigned)deevee_core_menu_confirmed_button(&core));
+            (unsigned)deevee_core_menu_confirmed_button(&core),
+            (unsigned long long)deevee_core_audio_payload_count(&core),
+            (unsigned long long)deevee_core_audio_packets_sent(&core),
+            (unsigned long long)deevee_core_audio_decoded_frames(&core),
+            (unsigned long long)deevee_core_audio_buffered_frames(&core),
+            (unsigned long long)deevee_core_audio_decode_errors(&core),
+            (unsigned long long)deevee_core_audio_underruns(&core),
+            deevee_core_audio_last_sample_rate(&core),
+            deevee_core_audio_last_channels(&core));
 
    if (video_cb)
       video_cb(video.pixels, video.width, video.height, video.pitch);

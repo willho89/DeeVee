@@ -13,6 +13,8 @@
 #include "deevee_nav.h"
 #include "deevee_video.h"
 
+#define DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY 8u
+
 struct deevee_frame
 {
    const void *pixels;
@@ -37,6 +39,24 @@ struct deevee_video_payload_chunk
    uint64_t dts;
 };
 
+struct deevee_audio_payload_chunk
+{
+   size_t offset;
+   size_t size;
+};
+
+struct deevee_decoded_video_frame
+{
+   uint32_t *pixels;
+   bool valid;
+   bool has_pts;
+   int64_t pts;
+   unsigned display_ticks;
+   unsigned width;
+   unsigned height;
+   int pixel_format;
+};
+
 struct deevee_core
 {
    bool initialized;
@@ -48,6 +68,19 @@ struct deevee_core
    struct deevee_video video;
    struct deevee_audio audio;
    struct deevee_video_decoder decoder;
+   uint32_t *decoder_output_pixels;
+   struct deevee_decoded_video_frame frame_queue[
+      DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY];
+   size_t frame_queue_head;
+   size_t frame_queue_count;
+   int64_t frame_clock_pts;
+   bool frame_clock_has_pts;
+   unsigned display_frame_ticks_remaining;
+   uint64_t displayed_frames;
+   uint64_t repeated_frames;
+   uint64_t decode_underruns;
+   uint64_t queue_drops;
+   uint64_t fallback_timing_frames;
    uint8_t *menu_video_payloads;
    size_t menu_video_payload_size;
    size_t menu_video_payload_capacity;
@@ -55,8 +88,18 @@ struct deevee_core
    size_t menu_video_chunk_count;
    size_t menu_video_chunk_capacity;
    size_t next_menu_video_chunk;
+   uint8_t *audio_payloads;
+   size_t audio_payload_size;
+   size_t audio_payload_capacity;
+   struct deevee_audio_payload_chunk *audio_chunks;
+   size_t audio_chunk_count;
+   size_t audio_chunk_capacity;
+   size_t next_audio_chunk;
+   uint64_t audio_payload_packets;
    unsigned menu_frame_hold;
    unsigned menu_frame_repeat;
+   uint8_t video_frame_rate_code;
+   unsigned video_frame_duration_ticks;
    char menu_playback_source[32];
    uint64_t menu_packets_sent;
    uint64_t menu_frames_decoded;
@@ -96,6 +139,22 @@ size_t deevee_core_menu_payload_count(const struct deevee_core *core);
 size_t deevee_core_menu_payload_bytes(const struct deevee_core *core);
 uint64_t deevee_core_menu_packets_sent(const struct deevee_core *core);
 uint64_t deevee_core_menu_frames_decoded(const struct deevee_core *core);
+uint64_t deevee_core_displayed_frames(const struct deevee_core *core);
+uint64_t deevee_core_repeated_frames(const struct deevee_core *core);
+uint64_t deevee_core_decode_underruns(const struct deevee_core *core);
+uint64_t deevee_core_queued_frames(const struct deevee_core *core);
+uint64_t deevee_core_queue_drops(const struct deevee_core *core);
+uint64_t deevee_core_fallback_timing_frames(const struct deevee_core *core);
+uint64_t deevee_core_audio_payload_count(const struct deevee_core *core);
+uint64_t deevee_core_audio_packets_sent(const struct deevee_core *core);
+uint64_t deevee_core_audio_decoded_frames(const struct deevee_core *core);
+uint64_t deevee_core_audio_buffered_frames(const struct deevee_core *core);
+uint64_t deevee_core_audio_decode_errors(const struct deevee_core *core);
+uint64_t deevee_core_audio_underruns(const struct deevee_core *core);
+unsigned deevee_core_audio_last_sample_rate(const struct deevee_core *core);
+unsigned deevee_core_audio_last_channels(const struct deevee_core *core);
+unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core);
+unsigned deevee_core_video_frame_duration_ticks(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_height(const struct deevee_core *core);
 int deevee_core_menu_last_pixel_format(const struct deevee_core *core);

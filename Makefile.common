@@ -23,3 +23,30 @@ ifeq ($(HAVE_FFMPEG),1)
 	CFLAGS += -DHAVE_FFMPEG=1 $(FFMPEG_CFLAGS)
 	LDFLAGS += $(FFMPEG_LIBS)
 endif
+
+ifeq ($(HAVE_CHD),1)
+	CHD_SOURCES_C := \
+		deps/libchdr/src/libchdr_bitstream.c \
+		deps/libchdr/src/libchdr_cdrom.c \
+		deps/libchdr/src/libchdr_chd.c \
+		deps/libchdr/src/libchdr_codec_cdfl.c \
+		deps/libchdr/src/libchdr_codec_cdlz.c \
+		deps/libchdr/src/libchdr_codec_cdzl.c \
+		deps/libchdr/src/libchdr_codec_cdzs.c \
+		deps/libchdr/src/libchdr_codec_flac.c \
+		deps/libchdr/src/libchdr_codec_huff.c \
+		deps/libchdr/src/libchdr_codec_lzma.c \
+		deps/libchdr/src/libchdr_codec_zlib.c \
+		deps/libchdr/src/libchdr_codec_zstd.c \
+		deps/libchdr/src/libchdr_flac.c \
+		deps/libchdr/src/libchdr_huffman.c \
+		deps/libchdr/deps/miniz-3.1.1/miniz.c \
+		deps/libchdr/deps/zstd-1.5.7/zstddeclib.c \
+		deps/libchdr/deps/lzma-25.01/src/LzmaDec.c
+	SOURCES_C += $(CHD_SOURCES_C)
+	CFLAGS += -DHAVE_CHD=1 -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1 \
+		-DVERIFY_BLOCK_CRC=1 -Ideps/libchdr/include \
+		-Ideps/libchdr/src -Ideps/libchdr/deps/miniz-3.1.1 \
+		-Ideps/libchdr/deps/zstd-1.5.7 \
+		-Ideps/libchdr/deps/lzma-25.01/include $(CHD_CFLAGS)
+endif

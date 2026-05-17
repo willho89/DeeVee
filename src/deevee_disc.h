@@ -24,6 +24,13 @@ struct deevee_disc
    void *handle;
    enum deevee_content_type type;
    uint64_t sector_count;
+   uint32_t chd_hunk_bytes;
+   uint32_t chd_unit_bytes;
+   uint32_t chd_unit_data_offset;
+   uint32_t chd_sectors_per_hunk;
+   uint32_t chd_cached_hunk;
+   bool chd_cache_valid;
+   uint8_t *chd_hunk_cache;
 };
 
 void deevee_disc_init(struct deevee_disc *disc);
