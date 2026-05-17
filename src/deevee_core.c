@@ -6,7 +6,7 @@
 
 #define DEEVEE_MIN_MENU_VIDEO_PAYLOAD_BYTES 65536u
 #define DEEVEE_MENU_VISIBILITY_SAMPLE_FRAMES 30u
-#define DEEVEE_MENU_FRAME_REPEAT 2u
+#define DEEVEE_DEFAULT_MENU_FRAME_REPEAT 2u
 
 struct payload_extract_context
 {
@@ -33,6 +33,7 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_video_chunk_capacity = 0;
    core->next_menu_video_chunk = 0;
    core->menu_frame_hold = 0;
+   core->menu_frame_repeat = DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
    core->menu_playback_active = false;
    core->menu_playback_source[0] = '\0';
    core->menu_packets_sent = 0;
@@ -93,6 +94,56 @@ static bool append_menu_video_payload(struct deevee_core *core,
    core->menu_video_payload_size += payload_size;
    core->menu_video_chunk_count++;
    return true;
+}
+
+static unsigned menu_repeat_from_frame_rate_code(uint8_t frame_rate_code)
+{
+   switch (frame_rate_code)
+   {
+      case 1: /* 24000 / 1001 */
+      case 2: /* 24 */
+         return 3;
+      case 3: /* 25 */
+      case 4: /* 30000 / 1001 */
+      case 5: /* 30 */
+         return 2;
+      case 6: /* 50 */
+      case 7: /* 60000 / 1001 */
+      case 8: /* 60 */
+         return 1;
+      default:
+         return DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
+   }
+}
+
+static void detect_menu_frame_repeat(struct deevee_core *core)
+{
+   size_t chunk_index;
+
+   if (!core)
+      return;
+
+   core->menu_frame_repeat = DEEVEE_DEFAULT_MENU_FRAME_REPEAT;
+
+   for (chunk_index = 0; chunk_index < core->menu_video_chunk_count;
+         chunk_index++)
+   {
+      const struct deevee_video_payload_chunk *chunk =
+         &core->menu_video_chunks[chunk_index];
+      const uint8_t *payload = core->menu_video_payloads + chunk->offset;
+      size_t i;
+
+      for (i = 0; i + 12 <= chunk->size; i++)
+      {
+         if (payload[i] == 0x00 && payload[i + 1] == 0x00 &&
+               payload[i + 2] == 0x01 && payload[i + 3] == 0xb3)
+         {
+            core->menu_frame_repeat =
+               menu_repeat_from_frame_rate_code(payload[i + 7] & 0x0fu);
+            return;
+         }
+      }
+   }
 }
 
 static bool reset_menu_decoder_position(struct deevee_core *core)
@@ -169,6 +220,7 @@ static bool prepare_menu_playback(struct deevee_core *core,
          !extract_context.ok || !core->menu_video_chunk_count)
       goto end_disc;
 
+   detect_menu_frame_repeat(core);
    if (!open_menu_decoder(core))
       goto end_disc;
 
@@ -211,6 +263,7 @@ static bool prepare_menu_playback_from_vob_path(struct deevee_core *core,
          !extract_context.ok || !core->menu_video_chunk_count)
       goto end_disc;
 
+   detect_menu_frame_repeat(core);
    if (!open_menu_decoder(core))
       goto end_disc;
 
@@ -254,6 +307,7 @@ static bool prepare_menu_playback_from_vts_pgc(struct deevee_core *core,
          !extract_context.ok || !core->menu_video_chunk_count)
       goto end_disc;
 
+   detect_menu_frame_repeat(core);
    if (!open_menu_decoder(core))
       goto end_disc;
 
@@ -525,7 +579,8 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
                label);
       }
       else
-         core->menu_frame_hold = DEEVEE_MENU_FRAME_REPEAT - 1u;
+         core->menu_frame_hold = core->menu_frame_repeat ?
+            core->menu_frame_repeat - 1u : 0u;
    }
    else
       deevee_video_render_placeholder(&core->video, core->frame_count, label);

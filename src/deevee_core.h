@@ -52,6 +52,7 @@ struct deevee_core
    size_t menu_video_chunk_capacity;
    size_t next_menu_video_chunk;
    unsigned menu_frame_hold;
+   unsigned menu_frame_repeat;
    char menu_playback_source[32];
    uint64_t menu_packets_sent;
    uint64_t menu_frames_decoded;
