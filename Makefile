@@ -48,7 +48,11 @@ test: $(TEST_EXE)
 
 clean:
 ifeq ($(OS),Windows_NT)
+ifneq ($(MSYSTEM),)
+	rm -f $(CLEAN_FILES)
+else
 	-cmd /C del /Q /F $(subst /,\,$(CLEAN_FILES)) 2>NUL
+endif
 else
 	rm -f $(CLEAN_FILES)
 endif
