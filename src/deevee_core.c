@@ -17,6 +17,12 @@ struct payload_extract_context
 static bool decode_next_menu_frame(struct deevee_core *core);
 static bool open_menu_decoder(struct deevee_core *core);
 
+static uint32_t deevee_core_rgb(unsigned r, unsigned g, unsigned b)
+{
+   return 0xff000000u | ((r & 0xffu) << 16) |
+      ((g & 0xffu) << 8) | (b & 0xffu);
+}
+
 static void clear_menu_video(struct deevee_core *core)
 {
    if (!core)
@@ -41,6 +47,11 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_last_frame_width = 0;
    core->menu_last_frame_height = 0;
    core->menu_last_pixel_format = 0;
+   core->menu_button_count = 0;
+   core->menu_active_button = 0;
+   core->menu_confirmed_button = 0;
+   core->menu_last_nav_mask = 0;
+   memset(core->menu_buttons, 0, sizeof(core->menu_buttons));
 }
 
 static bool append_menu_video_payload(struct deevee_core *core,
@@ -162,6 +173,103 @@ static bool reset_menu_decoder_position(struct deevee_core *core)
    core->menu_last_frame_height = 0;
    core->menu_last_pixel_format = 0;
    return true;
+}
+
+static void set_menu_buttons_from_probe(struct deevee_core *core,
+      const struct deevee_dvd_menu_render_probe *probe)
+{
+   uint8_t initial_button;
+
+   if (!core || !probe || !probe->button_count)
+      return;
+
+   core->menu_button_count = probe->button_count;
+   memcpy(core->menu_buttons, probe->buttons,
+         (size_t)probe->button_count * sizeof(core->menu_buttons[0]));
+
+   initial_button = probe->forced_select_button;
+   if (!initial_button)
+      initial_button = probe->starting_button;
+   if (!initial_button || initial_button > probe->button_count)
+      initial_button = 1;
+
+   core->menu_active_button = initial_button;
+}
+
+static void update_menu_button_selection(struct deevee_core *core)
+{
+   uint32_t nav_mask;
+   uint32_t pressed;
+   const struct deevee_dvd_menu_button *button;
+   uint8_t next_button = 0;
+
+   if (!core || !core->menu_button_count || !core->menu_active_button ||
+         core->menu_active_button > core->menu_button_count)
+      return;
+
+   nav_mask = deevee_nav_active_mask(&core->nav);
+   pressed = nav_mask & ~core->menu_last_nav_mask;
+   core->menu_last_nav_mask = nav_mask;
+
+   button = &core->menu_buttons[core->menu_active_button - 1u];
+   if (pressed & ((uint32_t)1u << DEEVEE_NAV_UP))
+      next_button = button->up;
+   else if (pressed & ((uint32_t)1u << DEEVEE_NAV_DOWN))
+      next_button = button->down;
+   else if (pressed & ((uint32_t)1u << DEEVEE_NAV_LEFT))
+      next_button = button->left;
+   else if (pressed & ((uint32_t)1u << DEEVEE_NAV_RIGHT))
+      next_button = button->right;
+   else if (pressed & ((uint32_t)1u << DEEVEE_NAV_CONFIRM))
+      core->menu_confirmed_button = core->menu_active_button;
+
+   if (next_button && next_button <= core->menu_button_count)
+      core->menu_active_button = next_button;
+}
+
+static void draw_menu_button_overlay(struct deevee_core *core)
+{
+   const struct deevee_dvd_menu_button *button;
+   uint32_t color;
+   uint16_t x0;
+   uint16_t x1;
+   uint16_t y0;
+   uint16_t y1;
+   unsigned x;
+   unsigned y;
+
+   if (!core || !core->video.pixels || !core->menu_button_count ||
+         !core->menu_active_button ||
+         core->menu_active_button > core->menu_button_count)
+      return;
+
+   button = &core->menu_buttons[core->menu_active_button - 1u];
+   x0 = button->x_start < DEEVEE_VIDEO_WIDTH ? button->x_start :
+      DEEVEE_VIDEO_WIDTH - 1u;
+   x1 = button->x_end < DEEVEE_VIDEO_WIDTH ? button->x_end :
+      DEEVEE_VIDEO_WIDTH - 1u;
+   y0 = button->y_start < DEEVEE_VIDEO_HEIGHT ? button->y_start :
+      DEEVEE_VIDEO_HEIGHT - 1u;
+   y1 = button->y_end < DEEVEE_VIDEO_HEIGHT ? button->y_end :
+      DEEVEE_VIDEO_HEIGHT - 1u;
+
+   if (x1 < x0 || y1 < y0)
+      return;
+
+   color = core->menu_confirmed_button == core->menu_active_button ?
+      deevee_core_rgb(255, 192, 32) : deevee_core_rgb(32, 255, 96);
+
+   for (y = y0; y <= y1; y++)
+   {
+      for (x = x0; x <= x1; x++)
+      {
+         bool border = x < x0 + 4u || x + 4u > x1 ||
+            y < y0 + 4u || y + 4u > y1;
+
+         if (border || ((x + y + (unsigned)core->frame_count) % 17u) == 0)
+            core->video.pixels[y * DEEVEE_VIDEO_WIDTH + x] = color;
+      }
+   }
 }
 
 static bool extract_payload_callback(const uint8_t *payload,
@@ -290,6 +398,7 @@ static bool prepare_menu_playback_from_vts_pgc(struct deevee_core *core,
 {
    struct deevee_disc disc;
    struct payload_extract_context extract_context;
+   struct deevee_dvd_menu_render_probe render_probe;
    bool prepared = false;
 
    if (!core || !content || content->type != DEEVEE_CONTENT_ISO)
@@ -306,6 +415,10 @@ static bool prepare_menu_playback_from_vts_pgc(struct deevee_core *core,
             extract_payload_callback, &extract_context) != DEEVEE_DVD_OK ||
          !extract_context.ok || !core->menu_video_chunk_count)
       goto end_disc;
+
+   if (deevee_dvd_probe_vts_menu_pgc_render_streams(&disc, vts, pgc_index,
+            &render_probe) == DEEVEE_DVD_OK)
+      set_menu_buttons_from_probe(core, &render_probe);
 
    detect_menu_frame_repeat(core);
    if (!open_menu_decoder(core))
@@ -568,6 +681,8 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
    if (core->loaded)
       label = deevee_content_type_name(core->content.type);
 
+   update_menu_button_selection(core);
+
    if (core->menu_playback_active)
    {
       if (core->menu_frame_hold)
@@ -584,6 +699,8 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
    }
    else
       deevee_video_render_placeholder(&core->video, core->frame_count, label);
+
+   draw_menu_button_overlay(core);
 
    video->pixels = core->video.pixels;
    video->width = DEEVEE_VIDEO_WIDTH;
@@ -648,4 +765,30 @@ unsigned deevee_core_menu_last_frame_height(const struct deevee_core *core)
 int deevee_core_menu_last_pixel_format(const struct deevee_core *core)
 {
    return core ? core->menu_last_pixel_format : 0;
+}
+
+uint8_t deevee_core_menu_button_count(const struct deevee_core *core)
+{
+   return core ? core->menu_button_count : 0;
+}
+
+uint8_t deevee_core_menu_active_button(const struct deevee_core *core)
+{
+   return core ? core->menu_active_button : 0;
+}
+
+uint8_t deevee_core_menu_confirmed_button(const struct deevee_core *core)
+{
+   return core ? core->menu_confirmed_button : 0;
+}
+
+uint8_t deevee_core_menu_confirmed_command_byte(
+      const struct deevee_core *core, unsigned index)
+{
+   if (!core || !core->menu_confirmed_button ||
+         core->menu_confirmed_button > core->menu_button_count ||
+         index >= 8u)
+      return 0;
+
+   return core->menu_buttons[core->menu_confirmed_button - 1u].command[index];
 }

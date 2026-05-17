@@ -59,6 +59,11 @@ struct deevee_core
    unsigned menu_last_frame_width;
    unsigned menu_last_frame_height;
    int menu_last_pixel_format;
+   uint8_t menu_button_count;
+   uint8_t menu_active_button;
+   uint8_t menu_confirmed_button;
+   uint32_t menu_last_nav_mask;
+   struct deevee_dvd_menu_button menu_buttons[DEEVEE_DVD_MAX_MENU_BUTTONS];
 };
 
 bool deevee_core_init(struct deevee_core *core);
@@ -80,5 +85,10 @@ uint64_t deevee_core_menu_frames_decoded(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_height(const struct deevee_core *core);
 int deevee_core_menu_last_pixel_format(const struct deevee_core *core);
+uint8_t deevee_core_menu_button_count(const struct deevee_core *core);
+uint8_t deevee_core_menu_active_button(const struct deevee_core *core);
+uint8_t deevee_core_menu_confirmed_button(const struct deevee_core *core);
+uint8_t deevee_core_menu_confirmed_command_byte(
+      const struct deevee_core *core, unsigned index);
 
 #endif

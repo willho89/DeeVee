@@ -20,6 +20,7 @@ static retro_input_state_t input_state_cb;
 static struct retro_log_callback logging;
 static struct deevee_core core;
 static unsigned diagnostic_frame_counter;
+static uint8_t logged_confirmed_button;
 
 static void deevee_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -180,7 +181,8 @@ bool retro_load_game(const struct retro_game_info *game)
          deevee_core_loaded_content_type(&core));
    deevee_log(RETRO_LOG_INFO,
          "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
-         "decoded_frames=%llu, frame=%ux%u, pixfmt=%d.\n",
+         "decoded_frames=%llu, frame=%ux%u, pixfmt=%d, buttons=%u, "
+         "active=%u.\n",
          deevee_core_menu_playback_active(&core) ? "active" : "inactive",
          deevee_core_menu_playback_source(&core),
          (unsigned)deevee_core_menu_payload_count(&core),
@@ -188,7 +190,9 @@ bool retro_load_game(const struct retro_game_info *game)
          (unsigned long long)deevee_core_menu_frames_decoded(&core),
          deevee_core_menu_last_frame_width(&core),
          deevee_core_menu_last_frame_height(&core),
-         deevee_core_menu_last_pixel_format(&core));
+         deevee_core_menu_last_pixel_format(&core),
+         (unsigned)deevee_core_menu_button_count(&core),
+         (unsigned)deevee_core_menu_active_button(&core));
    diagnostic_frame_counter = 0;
    return true;
 }
@@ -206,6 +210,7 @@ void retro_unload_game(void)
 {
    deevee_core_unload(&core);
    diagnostic_frame_counter = 0;
+   logged_confirmed_button = 0;
 }
 
 unsigned retro_get_region(void)
@@ -225,18 +230,39 @@ void retro_run(void)
    deevee_core_run(&core, &video, &audio);
    diagnostic_frame_counter++;
 
+   if (deevee_core_menu_confirmed_button(&core) &&
+         deevee_core_menu_confirmed_button(&core) != logged_confirmed_button)
+   {
+      logged_confirmed_button = deevee_core_menu_confirmed_button(&core);
+      deevee_log(RETRO_LOG_INFO,
+            "DeeVee: menu button %u confirmed, command="
+            "%02x%02x%02x%02x%02x%02x%02x%02x.\n",
+            (unsigned)logged_confirmed_button,
+            deevee_core_menu_confirmed_command_byte(&core, 0),
+            deevee_core_menu_confirmed_command_byte(&core, 1),
+            deevee_core_menu_confirmed_command_byte(&core, 2),
+            deevee_core_menu_confirmed_command_byte(&core, 3),
+            deevee_core_menu_confirmed_command_byte(&core, 4),
+            deevee_core_menu_confirmed_command_byte(&core, 5),
+            deevee_core_menu_confirmed_command_byte(&core, 6),
+            deevee_core_menu_confirmed_command_byte(&core, 7));
+   }
+
    if (diagnostic_frame_counter == 1 ||
          diagnostic_frame_counter % 120u == 0u)
       deevee_log(RETRO_LOG_INFO,
             "DeeVee: run menu=%s source=%s packets=%llu frames=%llu "
-            "frame=%ux%u pixfmt=%d.\n",
+            "frame=%ux%u pixfmt=%d buttons=%u active=%u confirmed=%u.\n",
             deevee_core_menu_playback_active(&core) ? "active" : "inactive",
             deevee_core_menu_playback_source(&core),
             (unsigned long long)deevee_core_menu_packets_sent(&core),
             (unsigned long long)deevee_core_menu_frames_decoded(&core),
             deevee_core_menu_last_frame_width(&core),
             deevee_core_menu_last_frame_height(&core),
-            deevee_core_menu_last_pixel_format(&core));
+            deevee_core_menu_last_pixel_format(&core),
+            (unsigned)deevee_core_menu_button_count(&core),
+            (unsigned)deevee_core_menu_active_button(&core),
+            (unsigned)deevee_core_menu_confirmed_button(&core));
 
    if (video_cb)
       video_cb(video.pixels, video.width, video.height, video.pitch);
