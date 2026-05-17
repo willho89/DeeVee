@@ -1,6 +1,6 @@
 display_name = "DeeVee"
 authors = "DeeVee contributors"
-supported_extensions = "iso|chd|ifo"
+supported_extensions = "iso|chd"
 corename = "DeeVee"
 manufacturer = "DVD-Video"
 categories = "Media Player"

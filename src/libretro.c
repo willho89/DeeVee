@@ -107,7 +107,7 @@ void retro_get_system_info(struct retro_system_info *info)
    memset(info, 0, sizeof(*info));
    info->library_name = "DeeVee";
    info->library_version = DEEVEE_CORE_VERSION;
-   info->valid_extensions = "iso|chd|ifo";
+   info->valid_extensions = "iso|chd";
    info->need_fullpath = true;
    info->block_extract = false;
 }

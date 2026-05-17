@@ -1,6 +1,6 @@
 # DeeVee
 
-DeeVee is a new libretro core intended to emulate a DVD-Video player. The goal is to load DVD `.iso` images, `.chd` images, and raw DVD folder layouts, then support DVD menus, extras, navigation, video playback, subtitles, and audio through standard libretro frontends.
+DeeVee is a new libretro core intended to emulate a DVD-Video player. The goal is to load DVD `.iso` and `.chd` images, then support DVD menus, extras, navigation, video playback, subtitles, and audio through standard libretro frontends.
 
 This repository currently contains the first scaffold only. It is buildable, validates DVD-like content paths, reserves joypad inputs for DVD menu navigation, renders a deterministic XRGB8888 placeholder frame, and emits silent 48 kHz stereo audio.
 
@@ -26,14 +26,19 @@ To run the lightweight content detection tests:
 make test
 ```
 
+To build the host-side content probe:
+
+```sh
+make probe
+./tools/deevee_probe /path/to/disc.iso /path/to/disc.chd
+```
+
 ## Current Content Handling
 
 `retro_load_game` requires a full path and currently accepts:
 
 - `.iso` files
 - `.chd` files
-- `.ifo` files
-- DVD folders containing either `VIDEO_TS/VIDEO_TS.IFO` or `VIDEO_TS.IFO`
 
 The scaffold does not decode DVD sectors, MPEG-2 video, subpictures, or audio yet.
 
@@ -46,7 +51,7 @@ The scaffold does not decode DVD sectors, MPEG-2 video, subpictures, or audio ye
 
 ## Near-Term Roadmap
 
-1. Replace placeholder content probing with real ISO/UDF and DVD folder opening.
+1. Replace placeholder content probing with real ISO/UDF opening.
 2. Add CHD-backed sector reading through `libchdr`.
 3. Integrate DVD navigation and VM behavior, likely through a `libdvdnav`-style boundary.
 4. Decode MPEG-2 video and subpicture overlays into the XRGB8888 frame buffer.

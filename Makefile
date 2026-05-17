@@ -10,12 +10,14 @@ endif
 
 OBJ := $(SOURCES_C:.c=.o)
 TEST_EXE := tests/test_content
+PROBE_EXE := tools/deevee_probe
 
 ifeq ($(OS),Windows_NT)
 	TARGET := $(TARGET_NAME)_libretro.dll
 	SHARED := -shared
 	EXPORTS := -Wl,--export-all-symbols
 	TEST_EXE := tests/test_content.exe
+	PROBE_EXE := tools/deevee_probe.exe
 else
 	UNAME_S := $(shell uname -s)
 	ifeq ($(UNAME_S),Darwin)
@@ -28,9 +30,10 @@ else
 	FPIC := -fPIC
 endif
 
-CLEAN_FILES := $(OBJ) $(TARGET) tests/test_content tests/test_content.exe
+CLEAN_FILES := $(OBJ) $(TARGET) tests/test_content tests/test_content.exe \
+	tools/deevee_probe tools/deevee_probe.exe
 
-.PHONY: all clean test
+.PHONY: all clean probe test
 
 all: $(TARGET)
 
@@ -42,6 +45,11 @@ $(TARGET): $(OBJ)
 
 $(TEST_EXE): tests/test_content.c src/deevee_content.c src/deevee_content.h
 	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tests/test_content.c src/deevee_content.c
+
+$(PROBE_EXE): tools/deevee_probe.c src/deevee_content.c src/deevee_content.h
+	$(CC) $(CSTD) $(WARNFLAGS) -Isrc -o $@ tools/deevee_probe.c src/deevee_content.c
+
+probe: $(PROBE_EXE)
 
 test: $(TEST_EXE)
 	./$(TEST_EXE)

@@ -9,9 +9,7 @@ enum deevee_content_type
 {
    DEEVEE_CONTENT_NONE = 0,
    DEEVEE_CONTENT_ISO,
-   DEEVEE_CONTENT_CHD,
-   DEEVEE_CONTENT_IFO,
-   DEEVEE_CONTENT_DVD_FOLDER
+   DEEVEE_CONTENT_CHD
 };
 
 struct deevee_content_info

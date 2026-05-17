@@ -7,6 +7,8 @@
 
 # Local test fixtures
 tests/tmp_*/
+test-media/
+RetroArch/
 
 # RetroArch/local runtime files
 *.srm

@@ -93,10 +93,8 @@ int main(void)
          DEEVEE_CONTENT_ISO);
    ok = ok && expect_type("tests/tmp_content_probe/movie.chd",
          DEEVEE_CONTENT_CHD);
-   ok = ok && expect_type("tests/tmp_content_probe/VIDEO_TS.IFO",
-         DEEVEE_CONTENT_IFO);
-   ok = ok && expect_type("tests/tmp_content_probe/disc",
-         DEEVEE_CONTENT_DVD_FOLDER);
+   ok = ok && expect_reject("tests/tmp_content_probe/VIDEO_TS.IFO");
+   ok = ok && expect_reject("tests/tmp_content_probe/disc");
    ok = ok && expect_reject("tests/tmp_content_probe/readme.txt");
    ok = ok && expect_reject("tests/tmp_content_probe/missing.iso");
 
