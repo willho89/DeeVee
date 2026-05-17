@@ -52,6 +52,11 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_confirmed_button = 0;
    core->menu_last_nav_mask = 0;
    memset(core->menu_buttons, 0, sizeof(core->menu_buttons));
+   core->menu_post_command_count = 0;
+   memset(core->menu_post_commands, 0, sizeof(core->menu_post_commands));
+   memset(core->menu_resolved_jump_command, 0,
+         sizeof(core->menu_resolved_jump_command));
+   core->menu_has_resolved_jump = false;
 }
 
 static bool append_menu_video_payload(struct deevee_core *core,
@@ -186,6 +191,10 @@ static void set_menu_buttons_from_probe(struct deevee_core *core,
    core->menu_button_count = probe->button_count;
    memcpy(core->menu_buttons, probe->buttons,
          (size_t)probe->button_count * sizeof(core->menu_buttons[0]));
+   core->menu_post_command_count = probe->parsed_post_command_count;
+   memcpy(core->menu_post_commands, probe->post_commands,
+         (size_t)probe->parsed_post_command_count *
+         sizeof(core->menu_post_commands[0]));
 
    initial_button = probe->forced_select_button;
    if (!initial_button)
@@ -194,6 +203,58 @@ static void set_menu_buttons_from_probe(struct deevee_core *core,
       initial_button = 1;
 
    core->menu_active_button = initial_button;
+}
+
+static bool is_link_tail_pgc_command(const uint8_t command[8])
+{
+   return command && command[0] == 0x20 && (command[1] & 0x0fu) == 0x01 &&
+      (command[7] & 0x1fu) == 0x0d;
+}
+
+static bool is_direct_jump_command(const uint8_t command[8])
+{
+   return command && command[0] == 0x30 &&
+      ((command[1] & 0x0fu) == 0x02 ||
+       (command[1] & 0x0fu) == 0x03 ||
+       (command[1] & 0x0fu) == 0x05 ||
+       (command[1] & 0x0fu) == 0x06);
+}
+
+static void resolve_menu_button_command(struct deevee_core *core,
+      const uint8_t command[8])
+{
+   uint8_t command_index;
+
+   if (!core || !command)
+      return;
+
+   memset(core->menu_resolved_jump_command, 0,
+         sizeof(core->menu_resolved_jump_command));
+   core->menu_has_resolved_jump = false;
+
+   if (is_direct_jump_command(command))
+   {
+      memcpy(core->menu_resolved_jump_command, command,
+            sizeof(core->menu_resolved_jump_command));
+      core->menu_has_resolved_jump = true;
+      return;
+   }
+
+   if (!is_link_tail_pgc_command(command))
+      return;
+
+   for (command_index = 0; command_index < core->menu_post_command_count;
+         command_index++)
+   {
+      if (is_direct_jump_command(core->menu_post_commands[command_index]))
+      {
+         memcpy(core->menu_resolved_jump_command,
+               core->menu_post_commands[command_index],
+               sizeof(core->menu_resolved_jump_command));
+         core->menu_has_resolved_jump = true;
+         return;
+      }
+   }
 }
 
 static void update_menu_button_selection(struct deevee_core *core)
@@ -221,7 +282,10 @@ static void update_menu_button_selection(struct deevee_core *core)
    else if (pressed & ((uint32_t)1u << DEEVEE_NAV_RIGHT))
       next_button = button->right;
    else if (pressed & ((uint32_t)1u << DEEVEE_NAV_CONFIRM))
+   {
       core->menu_confirmed_button = core->menu_active_button;
+      resolve_menu_button_command(core, button->command);
+   }
 
    if (next_button && next_button <= core->menu_button_count)
       core->menu_active_button = next_button;
@@ -791,4 +855,18 @@ uint8_t deevee_core_menu_confirmed_command_byte(
       return 0;
 
    return core->menu_buttons[core->menu_confirmed_button - 1u].command[index];
+}
+
+bool deevee_core_menu_has_resolved_jump(const struct deevee_core *core)
+{
+   return core && core->menu_has_resolved_jump;
+}
+
+uint8_t deevee_core_menu_resolved_jump_command_byte(
+      const struct deevee_core *core, unsigned index)
+{
+   if (!core || !core->menu_has_resolved_jump || index >= 8u)
+      return 0;
+
+   return core->menu_resolved_jump_command[index];
 }

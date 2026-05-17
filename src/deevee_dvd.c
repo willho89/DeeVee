@@ -1129,7 +1129,9 @@ enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
    uint16_t pgc_count;
    uint32_t pgc_start_byte;
    uint32_t pgc_byte_offset;
+   uint16_t command_table_offset;
    uint16_t cell_playback_table_offset;
+   uint8_t command_table[8];
    uint8_t cell_count;
    uint32_t first_cell_start_sector;
    uint32_t last_cell_end_sector;
@@ -1199,9 +1201,41 @@ enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
       return status;
 
    cell_count = pgc_header[3];
+   command_table_offset = read_be16(pgc_header + 0xe4);
    cell_playback_table_offset = read_be16(pgc_header + 0xe8);
    if (!cell_count || !cell_playback_table_offset)
       return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   if (command_table_offset &&
+         read_file_bytes(disc, &ifo_entry, pgc_byte_offset +
+            command_table_offset, command_table,
+            sizeof(command_table)) == DEEVEE_DVD_OK)
+   {
+      probe->pre_command_count = read_be16(command_table);
+      probe->post_command_count = read_be16(command_table + 2);
+      probe->cell_command_count = read_be16(command_table + 4);
+      if (probe->post_command_count)
+      {
+         uint16_t command_index;
+         uint16_t commands_to_read = probe->post_command_count;
+
+         if (commands_to_read > DEEVEE_DVD_MAX_PROBED_COMMANDS)
+            commands_to_read = DEEVEE_DVD_MAX_PROBED_COMMANDS;
+
+         for (command_index = 0; command_index < commands_to_read;
+               command_index++)
+         {
+            if (read_file_bytes(disc, &ifo_entry, pgc_byte_offset +
+                  command_table_offset + 8u +
+                  ((uint32_t)probe->pre_command_count + command_index) * 8u,
+                  probe->post_commands[command_index],
+                  sizeof(probe->post_commands[command_index])) !=
+                  DEEVEE_DVD_OK)
+               break;
+            probe->parsed_post_command_count++;
+         }
+      }
+   }
 
    status = read_file_bytes(disc, &ifo_entry,
          pgc_byte_offset + cell_playback_table_offset,

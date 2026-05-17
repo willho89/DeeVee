@@ -246,6 +246,18 @@ void retro_run(void)
             deevee_core_menu_confirmed_command_byte(&core, 5),
             deevee_core_menu_confirmed_command_byte(&core, 6),
             deevee_core_menu_confirmed_command_byte(&core, 7));
+      if (deevee_core_menu_has_resolved_jump(&core))
+         deevee_log(RETRO_LOG_INFO,
+               "DeeVee: resolved menu jump command="
+               "%02x%02x%02x%02x%02x%02x%02x%02x.\n",
+               deevee_core_menu_resolved_jump_command_byte(&core, 0),
+               deevee_core_menu_resolved_jump_command_byte(&core, 1),
+               deevee_core_menu_resolved_jump_command_byte(&core, 2),
+               deevee_core_menu_resolved_jump_command_byte(&core, 3),
+               deevee_core_menu_resolved_jump_command_byte(&core, 4),
+               deevee_core_menu_resolved_jump_command_byte(&core, 5),
+               deevee_core_menu_resolved_jump_command_byte(&core, 6),
+               deevee_core_menu_resolved_jump_command_byte(&core, 7));
    }
 
    if (diagnostic_frame_counter == 1 ||

@@ -541,6 +541,33 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      render_probe.forced_action_button);
                printf("  vts_menu_render_button_count: %u\n",
                      render_probe.button_count);
+               printf("  vts_menu_render_pre_commands: %u\n",
+                     render_probe.pre_command_count);
+               printf("  vts_menu_render_post_commands: %u\n",
+                     render_probe.post_command_count);
+               printf("  vts_menu_render_cell_commands: %u\n",
+                     render_probe.cell_command_count);
+               printf("  vts_menu_render_parsed_post_commands: %u\n",
+                     render_probe.parsed_post_command_count);
+               if (render_probe.parsed_post_command_count)
+               {
+                  uint8_t command_index;
+
+                  for (command_index = 0; command_index <
+                        render_probe.parsed_post_command_count;
+                        command_index++)
+                     printf("  vts_menu_render_post_command_%u: "
+                           "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                           (unsigned)(command_index + 1u),
+                           render_probe.post_commands[command_index][0],
+                           render_probe.post_commands[command_index][1],
+                           render_probe.post_commands[command_index][2],
+                           render_probe.post_commands[command_index][3],
+                           render_probe.post_commands[command_index][4],
+                           render_probe.post_commands[command_index][5],
+                           render_probe.post_commands[command_index][6],
+                           render_probe.post_commands[command_index][7]);
+               }
                if (render_probe.button_count)
                {
                   const struct deevee_dvd_menu_button *button =

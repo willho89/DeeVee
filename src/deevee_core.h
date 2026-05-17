@@ -64,6 +64,10 @@ struct deevee_core
    uint8_t menu_confirmed_button;
    uint32_t menu_last_nav_mask;
    struct deevee_dvd_menu_button menu_buttons[DEEVEE_DVD_MAX_MENU_BUTTONS];
+   uint8_t menu_post_command_count;
+   uint8_t menu_post_commands[DEEVEE_DVD_MAX_PROBED_COMMANDS][8];
+   uint8_t menu_resolved_jump_command[8];
+   bool menu_has_resolved_jump;
 };
 
 bool deevee_core_init(struct deevee_core *core);
@@ -89,6 +93,9 @@ uint8_t deevee_core_menu_button_count(const struct deevee_core *core);
 uint8_t deevee_core_menu_active_button(const struct deevee_core *core);
 uint8_t deevee_core_menu_confirmed_button(const struct deevee_core *core);
 uint8_t deevee_core_menu_confirmed_command_byte(
+      const struct deevee_core *core, unsigned index);
+bool deevee_core_menu_has_resolved_jump(const struct deevee_core *core);
+uint8_t deevee_core_menu_resolved_jump_command_byte(
       const struct deevee_core *core, unsigned index);
 
 #endif

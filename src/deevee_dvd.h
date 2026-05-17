@@ -14,6 +14,7 @@
 #define DEEVEE_DVD_MAX_TITLES 99
 #define DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS 16
 #define DEEVEE_DVD_MAX_MENU_BUTTONS 36
+#define DEEVEE_DVD_MAX_PROBED_COMMANDS 8
 
 enum deevee_dvd_status
 {
@@ -209,6 +210,11 @@ struct deevee_dvd_menu_render_probe
    uint8_t forced_select_button;
    uint8_t forced_action_button;
    uint8_t button_count;
+   uint16_t pre_command_count;
+   uint16_t post_command_count;
+   uint16_t cell_command_count;
+   uint8_t parsed_post_command_count;
+   uint8_t post_commands[DEEVEE_DVD_MAX_PROBED_COMMANDS][8];
    struct deevee_dvd_menu_button buttons[DEEVEE_DVD_MAX_MENU_BUTTONS];
    bool has_video;
    bool has_subpicture;
