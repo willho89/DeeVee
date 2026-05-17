@@ -7,7 +7,7 @@ This checklist validates the current scaffold before DeeVee has real DVD sector 
 From an MSYS2 UCRT64 shell:
 
 ```sh
-cd /c/Users/willho/.cursor/projects/empty-window/DeeVee
+../.cursor/projects/empty-window/DeeVee
 make clean
 make
 make test
