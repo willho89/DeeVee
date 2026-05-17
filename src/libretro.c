@@ -198,7 +198,7 @@ bool retro_load_game(const struct retro_game_info *game)
          "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
          "audio_payloads=%llu, decoded_frames=%llu, queued=%llu, "
          "rate_code=%u frame_ticks=%u, frame=%ux%u, pixfmt=%d, "
-         "buttons=%u, active=%u.\n",
+         "buttons=%u, active=%u, command_status=%s.\n",
          deevee_core_menu_playback_active(&core) ? "active" : "inactive",
          deevee_core_menu_playback_source(&core),
          (unsigned)deevee_core_menu_payload_count(&core),
@@ -212,7 +212,8 @@ bool retro_load_game(const struct retro_game_info *game)
          deevee_core_menu_last_frame_height(&core),
          deevee_core_menu_last_pixel_format(&core),
          (unsigned)deevee_core_menu_button_count(&core),
-         (unsigned)deevee_core_menu_active_button(&core));
+         (unsigned)deevee_core_menu_active_button(&core),
+         deevee_core_menu_command_status(&core));
    diagnostic_frame_counter = 0;
    return true;
 }
@@ -287,7 +288,8 @@ void retro_run(void)
             "displayed=%llu queued=%llu repeated=%llu underruns=%llu "
             "drops=%llu fallback=%llu rate_code=%u frame_ticks=%u "
             "frame=%ux%u pixfmt=%d buttons=%u "
-            "active=%u confirmed=%u audio_payloads=%llu audio_packets=%llu "
+            "active=%u confirmed=%u command_status=%s "
+            "audio_payloads=%llu audio_packets=%llu "
             "audio_frames=%llu audio_buffer=%llu audio_errors=%llu "
             "audio_underruns=%llu audio_rate=%u audio_channels=%u.\n",
             deevee_core_menu_playback_active(&core) ? "active" : "inactive",
@@ -308,6 +310,7 @@ void retro_run(void)
             (unsigned)deevee_core_menu_button_count(&core),
             (unsigned)deevee_core_menu_active_button(&core),
             (unsigned)deevee_core_menu_confirmed_button(&core),
+            deevee_core_menu_command_status(&core),
             (unsigned long long)deevee_core_audio_payload_count(&core),
             (unsigned long long)deevee_core_audio_packets_sent(&core),
             (unsigned long long)deevee_core_audio_decoded_frames(&core),

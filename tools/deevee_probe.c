@@ -943,24 +943,237 @@ static void print_disc_probe(const struct deevee_content_info *info)
                }
                if (render_probe.button_count)
                {
-                  const struct deevee_dvd_menu_button *button =
-                     &render_probe.buttons[0];
+                  uint8_t button_index;
 
-                  printf("  vts_menu_render_button_1_rect: %u,%u-%u,%u\n",
-                        button->x_start, button->y_start,
-                        button->x_end, button->y_end);
-                  printf("  vts_menu_render_button_1_adjacent: "
-                        "up=%u down=%u left=%u right=%u\n",
-                        button->up, button->down, button->left,
-                        button->right);
-                  printf("  vts_menu_render_button_1_auto_action: %s\n",
-                        yes_no(button->auto_action));
-                  printf("  vts_menu_render_button_1_command: "
-                        "%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                        button->command[0], button->command[1],
-                        button->command[2], button->command[3],
-                        button->command[4], button->command[5],
-                        button->command[6], button->command[7]);
+                  for (button_index = 0; button_index <
+                        render_probe.button_count; button_index++)
+                  {
+                     const struct deevee_dvd_menu_button *button =
+                        &render_probe.buttons[button_index];
+
+                     printf("  vts_menu_render_button_%u_rect: %u,%u-%u,%u\n",
+                           (unsigned)(button_index + 1u),
+                           button->x_start, button->y_start,
+                           button->x_end, button->y_end);
+                     printf("  vts_menu_render_button_%u_adjacent: "
+                           "up=%u down=%u left=%u right=%u\n",
+                           (unsigned)(button_index + 1u),
+                           button->up, button->down, button->left,
+                           button->right);
+                     printf("  vts_menu_render_button_%u_auto_action: %s\n",
+                           (unsigned)(button_index + 1u),
+                           yes_no(button->auto_action));
+                     printf("  vts_menu_render_button_%u_command: "
+                           "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                           (unsigned)(button_index + 1u),
+                           button->command[0], button->command[1],
+                           button->command[2], button->command[3],
+                           button->command[4], button->command[5],
+                           button->command[6], button->command[7]);
+                     {
+                        struct deevee_dvd_playback_target button_target;
+                        bool decoded;
+
+                        memset(&button_target, 0, sizeof(button_target));
+                        decoded = deevee_dvd_decode_playback_target_command(
+                              button->command, 1,
+                              DEEVEE_DVD_MENU_DOMAIN_VTS, &title_table,
+                              &button_target);
+                        printf("  vts_menu_render_button_%u_decoded: %s\n",
+                              (unsigned)(button_index + 1u),
+                              yes_no(decoded));
+                        if (decoded)
+                        {
+                           printf("  vts_menu_render_button_%u_target_type: %s\n",
+                                 (unsigned)(button_index + 1u),
+                                 deevee_dvd_playback_target_type_name(
+                                    button_target.type));
+                           printf("  vts_menu_render_button_%u_target_domain: %s\n",
+                                 (unsigned)(button_index + 1u),
+                                 deevee_dvd_menu_domain_name(
+                                    button_target.menu_domain));
+                           printf("  vts_menu_render_button_%u_target_vts: %u\n",
+                                 (unsigned)(button_index + 1u),
+                                 button_target.vts_number);
+                           printf("  vts_menu_render_button_%u_target_pgc: %u\n",
+                                 (unsigned)(button_index + 1u),
+                                 button_target.pgc_number);
+                           printf("  vts_menu_render_button_%u_target_vts_title: %u\n",
+                                 (unsigned)(button_index + 1u),
+                                 button_target.vts_title_number);
+                           if (button_target.type ==
+                                 DEEVEE_DVD_PLAYBACK_TARGET_MENU)
+                           {
+                              struct deevee_dvd_menu_render_probe target_probe;
+                              enum deevee_dvd_status target_status =
+                                 DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+                              memset(&target_probe, 0, sizeof(target_probe));
+                              if (button_target.menu_domain ==
+                                    DEEVEE_DVD_MENU_DOMAIN_VTS &&
+                                    button_target.vts_number &&
+                                    button_target.pgc_number)
+                                 target_status =
+                                    deevee_dvd_probe_vts_menu_pgc_render_streams(
+                                       &disc, button_target.vts_number,
+                                       button_target.pgc_number - 1u,
+                                       &target_probe);
+                              else if (button_target.menu_domain ==
+                                    DEEVEE_DVD_MENU_DOMAIN_VMG &&
+                                    button_target.pgc_number)
+                                 target_status =
+                                    deevee_dvd_probe_vmgm_menu_pgc_render_streams(
+                                       &disc, button_target.pgc_number - 1u,
+                                       &target_probe);
+
+                              printf("  vts_menu_render_button_%u_target_probe_status: %s\n",
+                                    (unsigned)(button_index + 1u),
+                                    deevee_dvd_status_name(target_status));
+                              if (target_status == DEEVEE_DVD_OK)
+                              {
+                                 printf("  vts_menu_render_button_%u_target_probe_buttons: %u\n",
+                                       (unsigned)(button_index + 1u),
+                                       target_probe.button_count);
+                                 printf("  vts_menu_render_button_%u_target_probe_pre_commands: %u\n",
+                                       (unsigned)(button_index + 1u),
+                                       target_probe.pre_command_count);
+                                 printf("  vts_menu_render_button_%u_target_probe_post_commands: %u\n",
+                                       (unsigned)(button_index + 1u),
+                                       target_probe.post_command_count);
+                                 printf("  vts_menu_render_button_%u_target_probe_parsed_post_commands: %u\n",
+                                       (unsigned)(button_index + 1u),
+                                       target_probe.parsed_post_command_count);
+                                 printf("  vts_menu_render_button_%u_target_probe_has_video: %s\n",
+                                       (unsigned)(button_index + 1u),
+                                       yes_no(target_probe.has_video));
+                                 printf("  vts_menu_render_button_%u_target_probe_has_nav: %s\n",
+                                       (unsigned)(button_index + 1u),
+                                       yes_no(target_probe.has_nav));
+                                 if (target_probe.parsed_post_command_count)
+                                 {
+                                    uint8_t target_command_index;
+
+                                    for (target_command_index = 0;
+                                          target_command_index <
+                                             target_probe.parsed_post_command_count;
+                                          target_command_index++)
+                                    {
+                                       struct deevee_dvd_playback_target post_target;
+                                       bool post_decoded;
+
+                                       printf("  vts_menu_render_button_%u_target_probe_post_command_%u: "
+                                             "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                             (unsigned)(button_index + 1u),
+                                             (unsigned)(target_command_index + 1u),
+                                             target_probe.post_commands[target_command_index][0],
+                                             target_probe.post_commands[target_command_index][1],
+                                             target_probe.post_commands[target_command_index][2],
+                                             target_probe.post_commands[target_command_index][3],
+                                             target_probe.post_commands[target_command_index][4],
+                                             target_probe.post_commands[target_command_index][5],
+                                             target_probe.post_commands[target_command_index][6],
+                                             target_probe.post_commands[target_command_index][7]);
+                                       memset(&post_target, 0,
+                                             sizeof(post_target));
+                                       post_decoded =
+                                          deevee_dvd_decode_playback_target_command(
+                                             target_probe.post_commands[target_command_index],
+                                             button_target.vts_number,
+                                             button_target.menu_domain,
+                                             &title_table, &post_target);
+                                       printf("  vts_menu_render_button_%u_target_probe_post_command_%u_decoded: %s\n",
+                                             (unsigned)(button_index + 1u),
+                                             (unsigned)(target_command_index + 1u),
+                                             yes_no(post_decoded));
+                                       if (post_decoded)
+                                       {
+                                          printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_type: %s\n",
+                                                (unsigned)(button_index + 1u),
+                                                (unsigned)(target_command_index + 1u),
+                                                deevee_dvd_playback_target_type_name(
+                                                   post_target.type));
+                                          printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_domain: %s\n",
+                                                (unsigned)(button_index + 1u),
+                                                (unsigned)(target_command_index + 1u),
+                                                deevee_dvd_menu_domain_name(
+                                                   post_target.menu_domain));
+                                          printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_vts: %u\n",
+                                                (unsigned)(button_index + 1u),
+                                                (unsigned)(target_command_index + 1u),
+                                                post_target.vts_number);
+                                          printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_pgc: %u\n",
+                                                (unsigned)(button_index + 1u),
+                                                (unsigned)(target_command_index + 1u),
+                                                post_target.pgc_number);
+                                          if (post_target.type ==
+                                                DEEVEE_DVD_PLAYBACK_TARGET_MENU &&
+                                                post_target.menu_domain ==
+                                                   DEEVEE_DVD_MENU_DOMAIN_VTS &&
+                                                post_target.vts_number)
+                                          {
+                                             struct deevee_dvd_menu_render_probe
+                                                post_menu_probe;
+                                             enum deevee_dvd_status
+                                                post_menu_status =
+                                                   DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+                                             unsigned post_pgc_index = 0;
+
+                                             memset(&post_menu_probe, 0,
+                                                   sizeof(post_menu_probe));
+                                             if (post_target.pgc_number)
+                                             {
+                                                post_pgc_index =
+                                                   post_target.pgc_number - 1u;
+                                                post_menu_status =
+                                                   deevee_dvd_probe_vts_menu_pgc_render_streams(
+                                                      &disc,
+                                                      post_target.vts_number,
+                                                      post_pgc_index,
+                                                      &post_menu_probe);
+                                             }
+                                             else
+                                             {
+                                                for (post_pgc_index = 0;
+                                                      post_pgc_index < 32u;
+                                                      post_pgc_index++)
+                                                {
+                                                   post_menu_status =
+                                                      deevee_dvd_probe_vts_menu_pgc_render_streams(
+                                                         &disc,
+                                                         post_target.vts_number,
+                                                         post_pgc_index,
+                                                         &post_menu_probe);
+                                                   if (post_menu_status ==
+                                                         DEEVEE_DVD_OK)
+                                                      break;
+                                                }
+                                             }
+                                             printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_probe_status: %s\n",
+                                                   (unsigned)(button_index + 1u),
+                                                   (unsigned)(target_command_index + 1u),
+                                                   deevee_dvd_status_name(
+                                                      post_menu_status));
+                                             if (post_menu_status ==
+                                                   DEEVEE_DVD_OK)
+                                             {
+                                                printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_probe_pgc: %u\n",
+                                                      (unsigned)(button_index + 1u),
+                                                      (unsigned)(target_command_index + 1u),
+                                                      post_pgc_index + 1u);
+                                                printf("  vts_menu_render_button_%u_target_probe_post_command_%u_target_probe_buttons: %u\n",
+                                                      (unsigned)(button_index + 1u),
+                                                      (unsigned)(target_command_index + 1u),
+                                                      post_menu_probe.button_count);
+                                             }
+                                          }
+                                       }
+                                    }
+                                 }
+                              }
+                           }
+                        }
+                     }
+                  }
                }
                printf("  vts_menu_render_has_video: %s\n",
                      yes_no(render_probe.has_video));
@@ -991,7 +1204,9 @@ static void print_disc_probe(const struct deevee_content_info *info)
                            resolved_command[6], resolved_command[7]);
                      printf("  resolved_menu_jump_target_status: %s\n",
                            yes_no(deevee_dvd_decode_playback_target_command(
-                              resolved_command, 1, &title_table, &target)));
+                              resolved_command, 1,
+                              DEEVEE_DVD_MENU_DOMAIN_VTS, &title_table,
+                              &target)));
                      if (target.type == DEEVEE_DVD_PLAYBACK_TARGET_TITLE)
                      {
                         printf("  resolved_menu_jump_target_vts: %u\n",
@@ -1034,6 +1249,73 @@ static void print_disc_probe(const struct deevee_content_info *info)
                            print_title_decode_probe(&disc, &title_pgc);
                            print_title_audio_probe(&disc, &title_pgc);
                         }
+                     }
+                  }
+               }
+
+               {
+                  unsigned candidate_pgc;
+
+                  for (candidate_pgc = 0; candidate_pgc < 4u;
+                        candidate_pgc++)
+                  {
+                     struct deevee_dvd_menu_render_probe candidate_probe;
+                     enum deevee_dvd_status candidate_status;
+
+                     memset(&candidate_probe, 0, sizeof(candidate_probe));
+                     candidate_status =
+                        deevee_dvd_probe_vts_menu_pgc_render_streams(&disc,
+                              1, candidate_pgc, &candidate_probe);
+                     printf("  vts_1_menu_pgc_%u_probe_status: %s\n",
+                           candidate_pgc + 1u,
+                           deevee_dvd_status_name(candidate_status));
+                     if (candidate_status == DEEVEE_DVD_OK)
+                     {
+                        printf("  vts_1_menu_pgc_%u_buttons: %u\n",
+                              candidate_pgc + 1u,
+                              candidate_probe.button_count);
+                        printf("  vts_1_menu_pgc_%u_post_commands: %u\n",
+                              candidate_pgc + 1u,
+                              candidate_probe.post_command_count);
+                        if (candidate_probe.parsed_post_command_count)
+                           printf("  vts_1_menu_pgc_%u_post_command_1: "
+                                 "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                                 candidate_pgc + 1u,
+                                 candidate_probe.post_commands[0][0],
+                                 candidate_probe.post_commands[0][1],
+                                 candidate_probe.post_commands[0][2],
+                                 candidate_probe.post_commands[0][3],
+                                 candidate_probe.post_commands[0][4],
+                                 candidate_probe.post_commands[0][5],
+                                 candidate_probe.post_commands[0][6],
+                                 candidate_probe.post_commands[0][7]);
+                        printf("  vts_1_menu_pgc_%u_has_video: %s\n",
+                              candidate_pgc + 1u,
+                              yes_no(candidate_probe.has_video));
+                     }
+                  }
+
+                  for (candidate_pgc = 0; candidate_pgc < 4u;
+                        candidate_pgc++)
+                  {
+                     struct deevee_dvd_menu_render_probe candidate_probe;
+                     enum deevee_dvd_status candidate_status;
+
+                     memset(&candidate_probe, 0, sizeof(candidate_probe));
+                     candidate_status =
+                        deevee_dvd_probe_vts_menu_pgc_render_streams(&disc,
+                              2, candidate_pgc, &candidate_probe);
+                     printf("  vts_2_menu_pgc_%u_probe_status: %s\n",
+                           candidate_pgc + 1u,
+                           deevee_dvd_status_name(candidate_status));
+                     if (candidate_status == DEEVEE_DVD_OK)
+                     {
+                        printf("  vts_2_menu_pgc_%u_buttons: %u\n",
+                              candidate_pgc + 1u,
+                              candidate_probe.button_count);
+                        printf("  vts_2_menu_pgc_%u_has_video: %s\n",
+                              candidate_pgc + 1u,
+                              yes_no(candidate_probe.has_video));
                      }
                   }
                }

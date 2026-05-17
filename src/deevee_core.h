@@ -116,6 +116,8 @@ struct deevee_core
    uint8_t menu_resolved_jump_command[8];
    bool menu_has_resolved_jump;
    uint8_t menu_current_vts;
+   enum deevee_dvd_menu_domain menu_domain;
+   char menu_command_status[96];
    bool playback_is_title;
    bool menu_last_frame_has_pts;
    int64_t menu_last_frame_pts;
@@ -166,5 +168,6 @@ uint8_t deevee_core_menu_confirmed_command_byte(
 bool deevee_core_menu_has_resolved_jump(const struct deevee_core *core);
 uint8_t deevee_core_menu_resolved_jump_command_byte(
       const struct deevee_core *core, unsigned index);
+const char *deevee_core_menu_command_status(const struct deevee_core *core);
 
 #endif

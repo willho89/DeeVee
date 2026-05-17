@@ -224,16 +224,26 @@ struct deevee_dvd_menu_render_probe
 enum deevee_dvd_playback_target_type
 {
    DEEVEE_DVD_PLAYBACK_TARGET_NONE = 0,
-   DEEVEE_DVD_PLAYBACK_TARGET_TITLE
+   DEEVEE_DVD_PLAYBACK_TARGET_TITLE,
+   DEEVEE_DVD_PLAYBACK_TARGET_MENU
+};
+
+enum deevee_dvd_menu_domain
+{
+   DEEVEE_DVD_MENU_DOMAIN_NONE = 0,
+   DEEVEE_DVD_MENU_DOMAIN_VMG,
+   DEEVEE_DVD_MENU_DOMAIN_VTS
 };
 
 struct deevee_dvd_playback_target
 {
    enum deevee_dvd_playback_target_type type;
+   enum deevee_dvd_menu_domain menu_domain;
    uint8_t title_number;
    uint8_t vts_number;
    uint8_t vts_title_number;
    uint16_t ptt_number;
+   uint16_t pgc_number;
 };
 
 struct deevee_dvd_title_pgc
@@ -304,12 +314,22 @@ enum deevee_dvd_status deevee_dvd_walk_vob_video_payloads(
 enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       deevee_dvd_video_payload_callback callback, void *user_data);
+enum deevee_dvd_status deevee_dvd_walk_vmgm_menu_pgc_video_payloads(
+      struct deevee_disc *disc, unsigned pgc_index,
+      deevee_dvd_video_payload_callback callback, void *user_data);
 enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       struct deevee_dvd_menu_render_probe *probe);
+enum deevee_dvd_status deevee_dvd_probe_vmgm_menu_pgc_render_streams(
+      struct deevee_disc *disc, unsigned pgc_index,
+      struct deevee_dvd_menu_render_probe *probe);
 bool deevee_dvd_decode_playback_target_command(const uint8_t command[8],
-      unsigned current_vts, const struct deevee_dvd_title_table *title_table,
+      unsigned current_vts, enum deevee_dvd_menu_domain current_menu_domain,
+      const struct deevee_dvd_title_table *title_table,
       struct deevee_dvd_playback_target *target);
+const char *deevee_dvd_playback_target_type_name(
+      enum deevee_dvd_playback_target_type type);
+const char *deevee_dvd_menu_domain_name(enum deevee_dvd_menu_domain domain);
 enum deevee_dvd_status deevee_dvd_resolve_title_pgc(
       struct deevee_disc *disc,
       const struct deevee_dvd_playback_target *target,
