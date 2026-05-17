@@ -84,8 +84,10 @@ static void print_disc_probe(const struct deevee_content_info *info)
       {
          struct deevee_dvd_title_table title_table;
          struct deevee_dvd_menu_language_table menu_table;
+         struct deevee_dvd_menu_pgc_summary menu_pgc;
          enum deevee_dvd_status title_status;
          enum deevee_dvd_status menu_status;
+         enum deevee_dvd_status menu_pgc_status;
          uint16_t i;
 
          printf("  dvd_video: %s\n", yes_no(dvd_info.is_dvd_video));
@@ -153,6 +155,37 @@ static void print_disc_probe(const struct deevee_content_info *info)
                printf("  menu_language_%u_start_byte: %u\n", i + 1,
                      language->start_byte);
             }
+         }
+
+         menu_pgc_status = deevee_dvd_read_first_menu_pgc(&disc,
+               &dvd_info, &menu_pgc);
+         printf("  first_menu_pgc_status: %s\n",
+               deevee_dvd_status_name(menu_pgc_status));
+         if (menu_pgc_status == DEEVEE_DVD_OK)
+         {
+            printf("  first_menu_pgc_language: %s\n", menu_pgc.language);
+            printf("  first_menu_pgc_count: %u\n", menu_pgc.pgc_count);
+            printf("  first_menu_pgc_category: %u\n",
+                  menu_pgc.pgc_category);
+            printf("  first_menu_pgc_start_byte: %u\n",
+                  menu_pgc.pgc_start_byte);
+            printf("  first_menu_program_count: %u\n",
+                  menu_pgc.program_count);
+            printf("  first_menu_cell_count: %u\n",
+                  menu_pgc.cell_count);
+            printf("  first_menu_playback_time_bcd: %02x:%02x:%02x:%02x\n",
+                  menu_pgc.playback_time[0], menu_pgc.playback_time[1],
+                  menu_pgc.playback_time[2], menu_pgc.playback_time[3]);
+            printf("  first_menu_prohibited_user_ops: %u\n",
+                  menu_pgc.prohibited_user_ops);
+            printf("  first_menu_command_table_offset: %u\n",
+                  menu_pgc.command_table_offset);
+            printf("  first_menu_program_map_offset: %u\n",
+                  menu_pgc.program_map_offset);
+            printf("  first_menu_cell_playback_table_offset: %u\n",
+                  menu_pgc.cell_playback_table_offset);
+            printf("  first_menu_cell_position_table_offset: %u\n",
+                  menu_pgc.cell_position_table_offset);
          }
       }
    }

@@ -77,6 +77,21 @@ static void write_title_entry(uint8_t *entry, uint8_t type, uint8_t angles,
    put_be32(entry + 8, vts_start_sector);
 }
 
+static void write_pgc_header(uint8_t *pgc)
+{
+   pgc[2] = 2;
+   pgc[3] = 3;
+   pgc[4] = 0x00;
+   pgc[5] = 0x01;
+   pgc[6] = 0x02;
+   pgc[7] = 0x03;
+   put_be32(pgc + 8, 0x01020304);
+   put_be16(pgc + 0xe4, 0x0100);
+   put_be16(pgc + 0xe6, 0x0120);
+   put_be16(pgc + 0xe8, 0x0140);
+   put_be16(pgc + 0xea, 0x0180);
+}
+
 static int write_sector(FILE *file, const uint8_t *sector)
 {
    return fwrite(sector, 1, DEEVEE_DVD_SECTOR_SIZE, file) ==
@@ -123,7 +138,7 @@ static int write_iso_fixture(const char *path, unsigned sectors)
                DEEVEE_DVD_SECTOR_SIZE, 2, &dot, 1);
          offset = write_record(sector, offset, 20,
                DEEVEE_DVD_SECTOR_SIZE, 2, &dotdot, 1);
-         write_record(sector, offset, 22, 1234, 0,
+         write_record(sector, offset, 22, 24 * DEEVEE_DVD_SECTOR_SIZE, 0,
                (const uint8_t *)"VIDEO_TS.IFO;1", 14);
       }
       else if (i == 22)
@@ -159,6 +174,11 @@ static int write_iso_fixture(const char *path, unsigned sectors)
          sector[10] = 0;
          sector[11] = 0x80;
          put_be32(sector + 12, 40);
+         put_be16(sector + 40, 1);
+         put_be32(sector + 44, 400);
+         put_be32(sector + 48, 0x83000000);
+         put_be32(sector + 52, 24);
+         write_pgc_header(sector + 64);
       }
 
       if (!write_sector(file, sector))
@@ -229,6 +249,7 @@ int main(void)
    uint8_t sector[DEEVEE_DVD_SECTOR_SIZE];
    struct deevee_dvd_info dvd_info;
    struct deevee_dvd_menu_language_table menu_table;
+   struct deevee_dvd_menu_pgc_summary menu_pgc;
    struct deevee_dvd_title_table title_table;
    struct deevee_iso_entry entry;
    struct deevee_content_info content;
@@ -257,7 +278,8 @@ int main(void)
    ok = ok && expect_iso_status(deevee_iso_find_path(&disc,
             "/VIDEO_TS/VIDEO_TS.IFO", &entry), DEEVEE_ISO_OK,
          "find VIDEO_TS.IFO");
-   ok = ok && entry.lba == 22 && entry.size == 1234 && !entry.is_directory;
+   ok = ok && entry.lba == 22 &&
+      entry.size == 24 * DEEVEE_DVD_SECTOR_SIZE && !entry.is_directory;
    ok = ok && expect_iso_status(deevee_iso_find_path(&disc,
             "/video_ts/video_ts.ifo", &entry), DEEVEE_ISO_OK,
          "find lowercase VIDEO_TS.IFO");
@@ -310,6 +332,25 @@ int main(void)
    ok = ok && menu_table.languages[0].language_extension == 0;
    ok = ok && menu_table.languages[0].menu_existence == 0x80;
    ok = ok && menu_table.languages[0].start_byte == 40;
+   ok = ok && expect_dvd_status(deevee_dvd_read_first_menu_pgc(&disc,
+            &dvd_info, &menu_pgc), DEEVEE_DVD_OK, "first menu pgc");
+   ok = ok && strcmp(menu_pgc.language, "en") == 0;
+   ok = ok && menu_pgc.language_unit_start_byte == 40;
+   ok = ok && menu_pgc.pgc_count == 1;
+   ok = ok && menu_pgc.language_unit_last_byte == 400;
+   ok = ok && menu_pgc.pgc_category == 0x83000000;
+   ok = ok && menu_pgc.pgc_start_byte == 24;
+   ok = ok && menu_pgc.program_count == 2;
+   ok = ok && menu_pgc.cell_count == 3;
+   ok = ok && menu_pgc.playback_time[0] == 0x00;
+   ok = ok && menu_pgc.playback_time[1] == 0x01;
+   ok = ok && menu_pgc.playback_time[2] == 0x02;
+   ok = ok && menu_pgc.playback_time[3] == 0x03;
+   ok = ok && menu_pgc.prohibited_user_ops == 0x01020304;
+   ok = ok && menu_pgc.command_table_offset == 0x0100;
+   ok = ok && menu_pgc.program_map_offset == 0x0120;
+   ok = ok && menu_pgc.cell_playback_table_offset == 0x0140;
+   ok = ok && menu_pgc.cell_position_table_offset == 0x0180;
    ok = ok && expect_status(deevee_disc_read_sector(&disc, 40,
             sector, sizeof(sector)), DEEVEE_DISC_ERROR_SEEK_FAILED,
          "read beyond end");

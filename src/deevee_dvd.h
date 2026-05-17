@@ -80,6 +80,24 @@ struct deevee_dvd_menu_language_table
       languages[DEEVEE_DVD_MAX_MENU_LANGUAGE_UNITS];
 };
 
+struct deevee_dvd_menu_pgc_summary
+{
+   char language[3];
+   uint32_t language_unit_start_byte;
+   uint16_t pgc_count;
+   uint32_t language_unit_last_byte;
+   uint32_t pgc_category;
+   uint32_t pgc_start_byte;
+   uint8_t program_count;
+   uint8_t cell_count;
+   uint8_t playback_time[4];
+   uint32_t prohibited_user_ops;
+   uint16_t command_table_offset;
+   uint16_t program_map_offset;
+   uint16_t cell_playback_table_offset;
+   uint16_t cell_position_table_offset;
+};
+
 enum deevee_dvd_status deevee_dvd_probe(struct deevee_disc *disc,
       struct deevee_dvd_info *info);
 enum deevee_dvd_status deevee_dvd_read_title_table(struct deevee_disc *disc,
@@ -88,6 +106,9 @@ enum deevee_dvd_status deevee_dvd_read_title_table(struct deevee_disc *disc,
 enum deevee_dvd_status deevee_dvd_read_menu_language_table(
       struct deevee_disc *disc, const struct deevee_dvd_info *info,
       struct deevee_dvd_menu_language_table *table);
+enum deevee_dvd_status deevee_dvd_read_first_menu_pgc(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_pgc_summary *pgc);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif

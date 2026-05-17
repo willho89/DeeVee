@@ -15,8 +15,9 @@ static uint32_t read_be32(const uint8_t *data)
       (uint32_t)data[3];
 }
 
-static enum deevee_dvd_status read_file_start(struct deevee_disc *disc,
-      const struct deevee_iso_entry *entry, uint8_t *out, size_t out_size)
+static enum deevee_dvd_status read_file_bytes(struct deevee_disc *disc,
+      const struct deevee_iso_entry *entry, uint32_t byte_offset,
+      uint8_t *out, size_t out_size)
 {
    uint8_t sector[DEEVEE_DVD_SECTOR_SIZE];
    size_t copied = 0;
@@ -24,13 +25,21 @@ static enum deevee_dvd_status read_file_start(struct deevee_disc *disc,
    if (!disc || !entry || !out || !out_size)
       return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
 
-   while (copied < out_size && copied < entry->size)
+   if (byte_offset >= entry->size)
+      return DEEVEE_DVD_ERROR_READ_FAILED;
+
+   while (copied < out_size && (uint64_t)byte_offset + copied < entry->size)
    {
-      uint64_t lba = entry->lba + copied / DEEVEE_DVD_SECTOR_SIZE;
-      size_t sector_offset = copied % DEEVEE_DVD_SECTOR_SIZE;
+      uint64_t file_offset = (uint64_t)byte_offset + copied;
+      uint64_t lba = entry->lba + file_offset / DEEVEE_DVD_SECTOR_SIZE;
+      size_t sector_offset = (size_t)(file_offset % DEEVEE_DVD_SECTOR_SIZE);
       size_t available = DEEVEE_DVD_SECTOR_SIZE - sector_offset;
       size_t remaining = out_size - copied;
+      uint64_t file_remaining = entry->size - file_offset;
       size_t to_copy = available < remaining ? available : remaining;
+
+      if ((uint64_t)to_copy > file_remaining)
+         to_copy = (size_t)file_remaining;
 
       if (deevee_disc_read_sector(disc, lba, sector, sizeof(sector)) !=
             DEEVEE_DISC_OK)
@@ -41,6 +50,12 @@ static enum deevee_dvd_status read_file_start(struct deevee_disc *disc,
    }
 
    return copied ? DEEVEE_DVD_OK : DEEVEE_DVD_ERROR_READ_FAILED;
+}
+
+static enum deevee_dvd_status read_file_start(struct deevee_disc *disc,
+      const struct deevee_iso_entry *entry, uint8_t *out, size_t out_size)
+{
+   return read_file_bytes(disc, entry, 0, out, out_size);
 }
 
 enum deevee_dvd_status deevee_dvd_probe(struct deevee_disc *disc,
@@ -173,6 +188,71 @@ enum deevee_dvd_status deevee_dvd_read_menu_language_table(
       table->languages[i].menu_existence = entry[3];
       table->languages[i].start_byte = read_be32(entry + 4);
    }
+
+   return DEEVEE_DVD_OK;
+}
+
+enum deevee_dvd_status deevee_dvd_read_first_menu_pgc(
+      struct deevee_disc *disc, const struct deevee_dvd_info *info,
+      struct deevee_dvd_menu_pgc_summary *pgc)
+{
+   enum deevee_dvd_status status;
+   struct deevee_dvd_menu_language_table menu_table;
+   const struct deevee_dvd_menu_language_unit *language;
+   uint8_t language_unit_header[16];
+   uint8_t pgc_header[0xec];
+   uint32_t table_byte_offset;
+   uint32_t language_unit_byte_offset;
+   uint32_t pgc_byte_offset;
+
+   if (!disc || !info || !pgc)
+      return DEEVEE_DVD_ERROR_INVALID_ARGUMENT;
+
+   memset(pgc, 0, sizeof(*pgc));
+
+   status = deevee_dvd_read_menu_language_table(disc, info, &menu_table);
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   if (!menu_table.parsed_language_count)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   language = &menu_table.languages[0];
+   table_byte_offset = info->vmgm_pgci_ut * DEEVEE_DVD_SECTOR_SIZE;
+   language_unit_byte_offset = table_byte_offset + language->start_byte;
+
+   status = read_file_bytes(disc, &info->video_ts_ifo,
+         language_unit_byte_offset, language_unit_header,
+         sizeof(language_unit_header));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   pgc->language[0] = language->language[0];
+   pgc->language[1] = language->language[1];
+   pgc->language[2] = '\0';
+   pgc->language_unit_start_byte = language->start_byte;
+   pgc->pgc_count = read_be16(language_unit_header);
+   pgc->language_unit_last_byte = read_be32(language_unit_header + 4);
+   if (!pgc->pgc_count)
+      return DEEVEE_DVD_ERROR_TABLE_NOT_FOUND;
+
+   pgc->pgc_category = read_be32(language_unit_header + 8);
+   pgc->pgc_start_byte = read_be32(language_unit_header + 12);
+   pgc_byte_offset = language_unit_byte_offset + pgc->pgc_start_byte;
+
+   status = read_file_bytes(disc, &info->video_ts_ifo,
+         pgc_byte_offset, pgc_header, sizeof(pgc_header));
+   if (status != DEEVEE_DVD_OK)
+      return status;
+
+   pgc->program_count = pgc_header[2];
+   pgc->cell_count = pgc_header[3];
+   memcpy(pgc->playback_time, pgc_header + 4, sizeof(pgc->playback_time));
+   pgc->prohibited_user_ops = read_be32(pgc_header + 8);
+   pgc->command_table_offset = read_be16(pgc_header + 0xe4);
+   pgc->program_map_offset = read_be16(pgc_header + 0xe6);
+   pgc->cell_playback_table_offset = read_be16(pgc_header + 0xe8);
+   pgc->cell_position_table_offset = read_be16(pgc_header + 0xea);
 
    return DEEVEE_DVD_OK;
 }
