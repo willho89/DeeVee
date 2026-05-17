@@ -221,6 +221,37 @@ struct deevee_dvd_menu_render_probe
    bool has_nav;
 };
 
+enum deevee_dvd_playback_target_type
+{
+   DEEVEE_DVD_PLAYBACK_TARGET_NONE = 0,
+   DEEVEE_DVD_PLAYBACK_TARGET_TITLE
+};
+
+struct deevee_dvd_playback_target
+{
+   enum deevee_dvd_playback_target_type type;
+   uint8_t title_number;
+   uint8_t vts_number;
+   uint8_t vts_title_number;
+   uint16_t ptt_number;
+};
+
+struct deevee_dvd_title_pgc
+{
+   uint8_t vts_number;
+   uint8_t vts_title_number;
+   uint16_t ptt_number;
+   uint16_t pgc_number;
+   uint16_t program_number;
+   uint8_t program_count;
+   uint8_t cell_count;
+   uint8_t first_cell;
+   uint8_t last_cell;
+   uint32_t first_sector;
+   uint32_t last_sector;
+   uint32_t sector_count;
+};
+
 typedef bool (*deevee_dvd_video_payload_callback)(const uint8_t *payload,
       size_t payload_size, void *user_data);
 
@@ -259,6 +290,16 @@ enum deevee_dvd_status deevee_dvd_walk_vts_menu_pgc_video_payloads(
 enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
       struct deevee_disc *disc, unsigned vts_number, unsigned pgc_index,
       struct deevee_dvd_menu_render_probe *probe);
+bool deevee_dvd_decode_playback_target_command(const uint8_t command[8],
+      unsigned current_vts, const struct deevee_dvd_title_table *title_table,
+      struct deevee_dvd_playback_target *target);
+enum deevee_dvd_status deevee_dvd_resolve_title_pgc(
+      struct deevee_disc *disc,
+      const struct deevee_dvd_playback_target *target,
+      struct deevee_dvd_title_pgc *title_pgc);
+enum deevee_dvd_status deevee_dvd_walk_title_pgc_video_payloads(
+      struct deevee_disc *disc, const struct deevee_dvd_title_pgc *title_pgc,
+      deevee_dvd_video_payload_callback callback, void *user_data);
 const char *deevee_dvd_status_name(enum deevee_dvd_status status);
 
 #endif

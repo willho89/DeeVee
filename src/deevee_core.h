@@ -68,6 +68,7 @@ struct deevee_core
    uint8_t menu_post_commands[DEEVEE_DVD_MAX_PROBED_COMMANDS][8];
    uint8_t menu_resolved_jump_command[8];
    bool menu_has_resolved_jump;
+   uint8_t menu_current_vts;
 };
 
 bool deevee_core_init(struct deevee_core *core);

@@ -16,6 +16,8 @@ struct payload_extract_context
 
 static bool decode_next_menu_frame(struct deevee_core *core);
 static bool open_menu_decoder(struct deevee_core *core);
+static bool prepare_title_playback_from_command(struct deevee_core *core,
+      const uint8_t command[8]);
 
 static uint32_t deevee_core_rgb(unsigned r, unsigned g, unsigned b)
 {
@@ -57,6 +59,7 @@ static void clear_menu_video(struct deevee_core *core)
    memset(core->menu_resolved_jump_command, 0,
          sizeof(core->menu_resolved_jump_command));
    core->menu_has_resolved_jump = false;
+   core->menu_current_vts = 0;
 }
 
 static bool append_menu_video_payload(struct deevee_core *core,
@@ -285,6 +288,9 @@ static void update_menu_button_selection(struct deevee_core *core)
    {
       core->menu_confirmed_button = core->menu_active_button;
       resolve_menu_button_command(core, button->command);
+      if (core->menu_has_resolved_jump)
+         (void)prepare_title_playback_from_command(core,
+               core->menu_resolved_jump_command);
    }
 
    if (next_button && next_button <= core->menu_button_count)
@@ -502,7 +508,74 @@ end_disc:
             vts, pgc_index + 1u);
       core->menu_playback_source[sizeof(core->menu_playback_source) - 1] =
          '\0';
+      core->menu_current_vts = (uint8_t)vts;
    }
+   return prepared;
+}
+
+static bool prepare_title_playback_from_command(struct deevee_core *core,
+      const uint8_t command[8])
+{
+   uint8_t command_copy[8];
+   uint8_t current_vts;
+   struct deevee_disc disc;
+   struct deevee_dvd_info dvd_info;
+   struct deevee_dvd_title_table title_table;
+   struct deevee_dvd_playback_target target;
+   struct deevee_dvd_title_pgc title_pgc;
+   struct payload_extract_context extract_context;
+   bool prepared = false;
+   bool cleared_video = false;
+
+   if (!core || !command || core->content.type != DEEVEE_CONTENT_ISO)
+      return false;
+
+   memcpy(command_copy, command, sizeof(command_copy));
+   current_vts = core->menu_current_vts;
+   deevee_disc_init(&disc);
+   if (deevee_disc_open(&disc, &core->content) != DEEVEE_DISC_OK)
+      return false;
+
+   memset(&dvd_info, 0, sizeof(dvd_info));
+   memset(&title_table, 0, sizeof(title_table));
+   memset(&target, 0, sizeof(target));
+   memset(&title_pgc, 0, sizeof(title_pgc));
+
+   if (deevee_dvd_probe(&disc, &dvd_info) != DEEVEE_DVD_OK ||
+         deevee_dvd_read_title_table(&disc, &dvd_info, &title_table) !=
+            DEEVEE_DVD_OK ||
+         !deevee_dvd_decode_playback_target_command(command_copy, current_vts,
+            &title_table, &target) ||
+         deevee_dvd_resolve_title_pgc(&disc, &target, &title_pgc) !=
+            DEEVEE_DVD_OK)
+      goto end_disc;
+
+   clear_menu_video(core);
+   cleared_video = true;
+   extract_context.core = core;
+   extract_context.ok = true;
+   if (deevee_dvd_walk_title_pgc_video_payloads(&disc, &title_pgc,
+            extract_payload_callback, &extract_context) != DEEVEE_DVD_OK ||
+         !extract_context.ok || !core->menu_video_chunk_count)
+      goto end_disc;
+
+   detect_menu_frame_repeat(core);
+   if (!open_menu_decoder(core))
+      goto end_disc;
+
+   core->next_menu_video_chunk = 0;
+   core->menu_playback_active = true;
+   core->menu_current_vts = title_pgc.vts_number;
+   snprintf(core->menu_playback_source, sizeof(core->menu_playback_source),
+         "VTS_%02u_TITLE_%02u_PGC_%02u", title_pgc.vts_number,
+         title_pgc.vts_title_number, title_pgc.pgc_number);
+   core->menu_playback_source[sizeof(core->menu_playback_source) - 1] = '\0';
+   prepared = true;
+
+end_disc:
+   deevee_disc_close(&disc);
+   if (!prepared && cleared_video)
+      clear_menu_video(core);
    return prepared;
 }
 

@@ -61,6 +61,19 @@ static bool decode_payload_callback(const uint8_t *payload,
    return context->status == DEEVEE_DECODER_OK;
 }
 
+static bool decode_until_frame_callback(const uint8_t *payload,
+      size_t payload_size, void *user_data)
+{
+   struct decode_probe_context *context =
+      (struct decode_probe_context *)user_data;
+
+   context->status = deevee_decoder_decode_mpeg2_payload(context->decoder,
+         payload, payload_size, context->probe);
+   context->payload_count++;
+   context->payload_bytes += (uint32_t)payload_size;
+   return context->status == DEEVEE_DECODER_OK && !context->probe->got_frame;
+}
+
 static void print_menu_vob_decode_probe(struct deevee_disc *disc,
       const char *iso_path, unsigned index)
 {
@@ -111,6 +124,97 @@ static void print_menu_vob_decode_probe(struct deevee_disc *disc,
       printf("  menu_vob_candidate_%u_height: %u\n", index,
             frame_probe.height);
       printf("  menu_vob_candidate_%u_pixel_format: %d\n", index,
+            frame_probe.pixel_format);
+   }
+
+   deevee_decoder_deinit(&decoder);
+}
+
+static int command_is_link_tail_pgc(const uint8_t command[8])
+{
+   return command && command[0] == 0x20 && (command[1] & 0x0f) == 0x01 &&
+      (command[7] & 0x1f) == 0x0d;
+}
+
+static int command_is_direct_jump(const uint8_t command[8])
+{
+   return command && command[0] == 0x30 &&
+      ((command[1] & 0x0f) == 0x02 ||
+       (command[1] & 0x0f) == 0x03 ||
+       (command[1] & 0x0f) == 0x05 ||
+       (command[1] & 0x0f) == 0x06);
+}
+
+static const uint8_t *resolve_probe_button_command(
+      const struct deevee_dvd_menu_render_probe *render_probe)
+{
+   uint8_t i;
+
+   if (!render_probe || !render_probe->button_count)
+      return NULL;
+
+   if (command_is_direct_jump(render_probe->buttons[0].command))
+      return render_probe->buttons[0].command;
+
+   if (!command_is_link_tail_pgc(render_probe->buttons[0].command))
+      return NULL;
+
+   for (i = 0; i < render_probe->parsed_post_command_count; i++)
+      if (command_is_direct_jump(render_probe->post_commands[i]))
+         return render_probe->post_commands[i];
+
+   return NULL;
+}
+
+static void print_title_decode_probe(struct deevee_disc *disc,
+      const struct deevee_dvd_title_pgc *title_pgc)
+{
+   struct deevee_video_decoder decoder;
+   struct deevee_decoder_frame_probe frame_probe;
+   struct decode_probe_context decode_context;
+   enum deevee_decoder_status decoder_status;
+   enum deevee_dvd_status dvd_status;
+
+   memset(&frame_probe, 0, sizeof(frame_probe));
+   memset(&decode_context, 0, sizeof(decode_context));
+
+   decoder_status = deevee_decoder_init(&decoder);
+   if (decoder_status == DEEVEE_DECODER_OK)
+      decoder_status = deevee_decoder_open_mpeg2(&decoder);
+
+   if (decoder_status == DEEVEE_DECODER_OK)
+   {
+      decode_context.decoder = &decoder;
+      decode_context.probe = &frame_probe;
+      decode_context.status = DEEVEE_DECODER_OK;
+
+      dvd_status = deevee_dvd_walk_title_pgc_video_payloads(disc, title_pgc,
+            decode_until_frame_callback, &decode_context);
+      if (dvd_status != DEEVEE_DVD_OK)
+         decoder_status = DEEVEE_DECODER_ERROR_DECODE_FAILED;
+      else if (decode_context.status != DEEVEE_DECODER_OK)
+         decoder_status = decode_context.status;
+      else
+         decoder_status = deevee_decoder_flush_mpeg2(&decoder, &frame_probe);
+   }
+
+   printf("  resolved_title_decode_status: %s\n",
+         deevee_decoder_status_name(decoder_status));
+   printf("  resolved_title_decode_payloads: %u\n",
+         decode_context.payload_count);
+   printf("  resolved_title_decode_payload_bytes: %u\n",
+         decode_context.payload_bytes);
+   printf("  resolved_title_decode_packets_sent: %u\n",
+         frame_probe.packets_sent);
+   printf("  resolved_title_decode_frames: %u\n",
+         frame_probe.frames_decoded);
+   printf("  resolved_title_decode_got_frame: %s\n",
+         yes_no(frame_probe.got_frame));
+   if (frame_probe.got_frame)
+   {
+      printf("  resolved_title_decode_width: %u\n", frame_probe.width);
+      printf("  resolved_title_decode_height: %u\n", frame_probe.height);
+      printf("  resolved_title_decode_pixel_format: %d\n",
             frame_probe.pixel_format);
    }
 
@@ -595,6 +699,73 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      yes_no(render_probe.has_subpicture));
                printf("  vts_menu_render_has_nav: %s\n",
                      yes_no(render_probe.has_nav));
+
+               {
+                  const uint8_t *resolved_command =
+                     resolve_probe_button_command(&render_probe);
+                  struct deevee_dvd_playback_target target;
+                  struct deevee_dvd_title_pgc title_pgc;
+
+                  memset(&target, 0, sizeof(target));
+                  memset(&title_pgc, 0, sizeof(title_pgc));
+
+                  printf("  resolved_menu_jump_command_present: %s\n",
+                        yes_no(resolved_command != NULL));
+                  if (resolved_command)
+                  {
+                     enum deevee_dvd_status target_status;
+                     printf("  resolved_menu_jump_command: "
+                           "%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                           resolved_command[0], resolved_command[1],
+                           resolved_command[2], resolved_command[3],
+                           resolved_command[4], resolved_command[5],
+                           resolved_command[6], resolved_command[7]);
+                     printf("  resolved_menu_jump_target_status: %s\n",
+                           yes_no(deevee_dvd_decode_playback_target_command(
+                              resolved_command, 1, &title_table, &target)));
+                     if (target.type == DEEVEE_DVD_PLAYBACK_TARGET_TITLE)
+                     {
+                        printf("  resolved_menu_jump_target_vts: %u\n",
+                              target.vts_number);
+                        printf("  resolved_menu_jump_target_vts_title: %u\n",
+                              target.vts_title_number);
+                        printf("  resolved_menu_jump_target_ptt: %u\n",
+                              target.ptt_number);
+                        target_status = deevee_dvd_resolve_title_pgc(&disc,
+                              &target, &title_pgc);
+                        printf("  resolved_title_pgc_status: %s\n",
+                              deevee_dvd_status_name(target_status));
+                        if (target_status == DEEVEE_DVD_OK)
+                        {
+                           printf("  resolved_title_pgc_vts: %u\n",
+                                 title_pgc.vts_number);
+                           printf("  resolved_title_pgc_vts_title: %u\n",
+                                 title_pgc.vts_title_number);
+                           printf("  resolved_title_pgc_ptt: %u\n",
+                                 title_pgc.ptt_number);
+                           printf("  resolved_title_pgc_number: %u\n",
+                                 title_pgc.pgc_number);
+                           printf("  resolved_title_pgc_program: %u\n",
+                                 title_pgc.program_number);
+                           printf("  resolved_title_pgc_programs: %u\n",
+                                 title_pgc.program_count);
+                           printf("  resolved_title_pgc_cells: %u\n",
+                                 title_pgc.cell_count);
+                           printf("  resolved_title_pgc_first_cell: %u\n",
+                                 title_pgc.first_cell);
+                           printf("  resolved_title_pgc_last_cell: %u\n",
+                                 title_pgc.last_cell);
+                           printf("  resolved_title_pgc_first_sector: %u\n",
+                                 title_pgc.first_sector);
+                           printf("  resolved_title_pgc_last_sector: %u\n",
+                                 title_pgc.last_sector);
+                           printf("  resolved_title_pgc_sector_count: %u\n",
+                                 title_pgc.sector_count);
+                           print_title_decode_probe(&disc, &title_pgc);
+                        }
+                     }
+                  }
+               }
             }
          }
       }
