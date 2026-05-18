@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEEVEE_CORE_VERSION "0.5.0"
+#define DEEVEE_CORE_VERSION "0.5.0-alpha"
 
 #ifndef RETRO_ENVIRONMENT_GET_VARIABLE
 #define RETRO_ENVIRONMENT_GET_VARIABLE 15
