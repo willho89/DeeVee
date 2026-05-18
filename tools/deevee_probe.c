@@ -5,6 +5,7 @@
 #include "deevee_dvd.h"
 #include "deevee_dvdnav.h"
 #include "deevee_iso.h"
+#include "deevee_subpicture.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +44,11 @@ static const char *yes_no(int value)
    return value ? "yes" : "no";
 }
 
+static uint16_t probe_read_be16(const uint8_t *data)
+{
+   return (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+}
+
 static int sector_has_iso_volume_descriptor(const uint8_t *sector)
 {
    return sector &&
@@ -69,6 +75,23 @@ struct packet_probe_context
    bool last_pts_valid;
    uint64_t last_pts;
    bool pts_monotonic;
+};
+
+struct spu_decode_probe_context
+{
+   struct deevee_subpicture_decoder decoder;
+   struct deevee_subpicture_frame frame;
+   uint8_t *assembly;
+   size_t assembly_size;
+   size_t assembly_capacity;
+   size_t expected_size;
+   uint8_t stream_id;
+   bool has_stream_id;
+   uint32_t payload_count;
+   uint32_t unit_count;
+   uint32_t decoded_units;
+   uint32_t rect_count;
+   uint32_t decode_errors;
 };
 
 struct timed_decode_probe_context
@@ -218,6 +241,103 @@ static bool audio_probe_packet_callback(
 
    return deevee_audio_decoded_frames(&context->audio) <
       DEEVEE_AUDIO_SAMPLE_RATE;
+}
+
+static bool spu_decode_probe_decode_unit(struct spu_decode_probe_context *context)
+{
+   enum deevee_subpicture_status status;
+
+   if (!context || !context->assembly || !context->expected_size)
+      return false;
+
+   status = deevee_subpicture_decode_dvd_payload(&context->decoder,
+         context->assembly, context->expected_size, false, 0,
+         &context->frame);
+   context->unit_count++;
+   if (status != DEEVEE_SUBPICTURE_OK)
+   {
+      context->decode_errors++;
+      return true;
+   }
+   if (context->frame.valid && context->frame.rect_count)
+   {
+      context->decoded_units++;
+      context->rect_count += context->frame.rect_count;
+   }
+   return true;
+}
+
+static bool spu_decode_probe_packet_callback(
+      const struct deevee_dvd_packet *packet, void *user_data)
+{
+   struct spu_decode_probe_context *context =
+      (struct spu_decode_probe_context *)user_data;
+   const uint8_t *payload;
+   size_t payload_size;
+   size_t required_size;
+
+   if (!packet || !context)
+      return false;
+   if (packet->stream_id != 0xbd || !packet->payload ||
+         packet->payload_size <= 1u)
+      return true;
+
+   if (packet->payload[0] < 0x20 || packet->payload[0] > 0x3f)
+      return true;
+   if (context->has_stream_id && packet->payload[0] != context->stream_id)
+      return true;
+   if (!context->has_stream_id)
+   {
+      context->stream_id = packet->payload[0];
+      context->has_stream_id = true;
+   }
+
+   payload = packet->payload + 1u;
+   payload_size = packet->payload_size - 1u;
+   required_size = context->assembly_size + payload_size;
+   if (required_size > context->assembly_capacity)
+   {
+      size_t new_capacity = context->assembly_capacity ?
+         context->assembly_capacity * 2u : 4096u;
+      uint8_t *new_assembly;
+
+      while (new_capacity < required_size)
+         new_capacity *= 2u;
+      new_assembly = (uint8_t *)realloc(context->assembly, new_capacity);
+      if (!new_assembly)
+         return false;
+
+      context->assembly = new_assembly;
+      context->assembly_capacity = new_capacity;
+   }
+
+   memcpy(context->assembly + context->assembly_size, payload, payload_size);
+   context->assembly_size += payload_size;
+   context->payload_count++;
+
+   if (!context->expected_size && context->assembly_size >= 2u)
+      context->expected_size = probe_read_be16(context->assembly);
+
+   while (context->expected_size &&
+         context->assembly_size >= context->expected_size)
+   {
+      size_t unit_size = context->expected_size;
+      size_t remaining;
+
+      if (!spu_decode_probe_decode_unit(context))
+         return false;
+
+      remaining = context->assembly_size - unit_size;
+      if (remaining)
+         memmove(context->assembly, context->assembly + unit_size,
+               remaining);
+      context->assembly_size = remaining;
+      context->expected_size = 0;
+      if (context->assembly_size >= 2u)
+         context->expected_size = probe_read_be16(context->assembly);
+   }
+
+   return context->decoded_units < 4u && context->payload_count < 256u;
 }
 
 static int dvdnav_block_has_start_code(const uint8_t *block, uint8_t code)
@@ -523,6 +643,44 @@ static void print_menu_vob_render_probe(struct deevee_disc *disc,
                target.vts_title_number);
       }
    }
+}
+
+static void print_menu_vob_spu_decode_probe(struct deevee_disc *disc,
+      const char *iso_path, unsigned index)
+{
+   struct spu_decode_probe_context context;
+   enum deevee_dvd_status status;
+
+   memset(&context, 0, sizeof(context));
+   deevee_subpicture_init(&context.decoder);
+   if (deevee_subpicture_open_dvd(&context.decoder) !=
+         DEEVEE_SUBPICTURE_OK)
+   {
+      printf("  menu_vob_candidate_%u_spu_decoder: unavailable\n", index);
+      return;
+   }
+
+   status = deevee_dvd_walk_vob_packets(disc, iso_path,
+         spu_decode_probe_packet_callback, &context);
+
+   printf("  menu_vob_candidate_%u_spu_probe_status: %s\n", index,
+         deevee_dvd_status_name(status));
+   printf("  menu_vob_candidate_%u_spu_stream: 0x%02x\n", index,
+         context.has_stream_id ? context.stream_id : 0);
+   printf("  menu_vob_candidate_%u_spu_payloads: %u\n", index,
+         context.payload_count);
+   printf("  menu_vob_candidate_%u_spu_units: %u\n", index,
+         context.unit_count);
+   printf("  menu_vob_candidate_%u_spu_decoded_units: %u\n", index,
+         context.decoded_units);
+   printf("  menu_vob_candidate_%u_spu_rects: %u\n", index,
+         context.rect_count);
+   printf("  menu_vob_candidate_%u_spu_errors: %u\n", index,
+         context.decode_errors);
+
+   free(context.assembly);
+   deevee_subpicture_frame_clear(&context.frame);
+   deevee_subpicture_deinit(&context.decoder);
 }
 
 static int command_is_link_tail_pgc(const uint8_t command[8])
@@ -1126,6 +1284,23 @@ static void print_disc_probe(const struct deevee_content_info *info)
                snprintf(vob_path, sizeof(vob_path),
                      "/VIDEO_TS/VTS_%02u_0.VOB", vts);
                print_menu_vob_decode_probe(&disc, vob_path,
+                     candidate_index++);
+            }
+         }
+
+         {
+            unsigned candidate_index = 1;
+            unsigned vts;
+            char vob_path[32];
+
+            print_menu_vob_spu_decode_probe(&disc, "/VIDEO_TS/VIDEO_TS.VOB",
+                  candidate_index++);
+            for (vts = 1; vts <= dvd_info.vmg_title_set_count && vts <= 99;
+                  vts++)
+            {
+               snprintf(vob_path, sizeof(vob_path),
+                     "/VIDEO_TS/VTS_%02u_0.VOB", vts);
+               print_menu_vob_spu_decode_probe(&disc, vob_path,
                      candidate_index++);
             }
          }

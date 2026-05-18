@@ -1596,6 +1596,14 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
                uint8_t forced_action = pci[0x75];
                uint8_t i;
 
+               if (pci_size >= 0x8e)
+               {
+                  for (i = 0; i < 3u; i++)
+                     probe->select_color_table[i] =
+                        read_be32(pci + 0x76u + (size_t)i * 8u);
+                  probe->has_select_color_table = true;
+               }
+
                if (button_count > DEEVEE_DVD_MAX_MENU_BUTTONS)
                   button_count = DEEVEE_DVD_MAX_MENU_BUTTONS;
                if (0x8e + (size_t)button_count * 18u <= pci_size)
@@ -1728,6 +1736,15 @@ enum deevee_dvd_status deevee_dvd_probe_vts_menu_pgc_render_streams(
          pgc_header, sizeof(pgc_header));
    if (status != DEEVEE_DVD_OK)
       return status;
+
+   {
+      uint8_t palette_index;
+
+      for (palette_index = 0; palette_index < 16u; palette_index++)
+         probe->subpicture_clut[palette_index] =
+            read_be32(pgc_header + 0xa4u + (uint32_t)palette_index * 4u);
+      probe->has_subpicture_clut = true;
+   }
 
    cell_count = pgc_header[3];
    command_table_offset = read_be16(pgc_header + 0xe4);
@@ -1891,6 +1908,15 @@ enum deevee_dvd_status deevee_dvd_probe_vmgm_menu_pgc_render_streams(
          pgc_header, sizeof(pgc_header));
    if (status != DEEVEE_DVD_OK)
       return status;
+
+   {
+      uint8_t palette_index;
+
+      for (palette_index = 0; palette_index < 16u; palette_index++)
+         probe->subpicture_clut[palette_index] =
+            read_be32(pgc_header + 0xa4u + (uint32_t)palette_index * 4u);
+      probe->has_subpicture_clut = true;
+   }
 
    cell_count = pgc_header[3];
    command_table_offset = read_be16(pgc_header + 0xe4);

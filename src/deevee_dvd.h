@@ -216,6 +216,10 @@ struct deevee_dvd_menu_render_probe
    uint8_t parsed_post_command_count;
    uint8_t post_commands[DEEVEE_DVD_MAX_PROBED_COMMANDS][8];
    struct deevee_dvd_menu_button buttons[DEEVEE_DVD_MAX_MENU_BUTTONS];
+   uint32_t subpicture_clut[16];
+   uint32_t select_color_table[3];
+   bool has_subpicture_clut;
+   bool has_select_color_table;
    bool has_video;
    bool has_subpicture;
    bool has_nav;

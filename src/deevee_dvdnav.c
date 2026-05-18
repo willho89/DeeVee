@@ -287,6 +287,11 @@ bool deevee_dvdnav_read_buttons(struct deevee_dvdnav *nav,
 #if HAVE_DVDNAV
    pci_t *pci;
    int32_t highlight = 0;
+   uint8_t display_types[3];
+   uint8_t group_count;
+   uint8_t group_index = 0;
+   uint8_t buttons_per_group;
+   uint8_t video_aspect;
    uint8_t count;
    uint8_t i;
 
@@ -297,14 +302,36 @@ bool deevee_dvdnav_read_buttons(struct deevee_dvdnav *nav,
    if (!pci)
       return false;
 
+   group_count = pci->hli.hl_gi.btngr_ns & 0x03u;
+   if (!group_count || group_count > 3u)
+      group_count = 1u;
+   buttons_per_group = (uint8_t)(36u / group_count);
+   display_types[0] = pci->hli.hl_gi.btngr1_dsp_ty & 0x07u;
+   display_types[1] = pci->hli.hl_gi.btngr2_dsp_ty & 0x07u;
+   display_types[2] = pci->hli.hl_gi.btngr3_dsp_ty & 0x07u;
+   video_aspect = dvdnav_get_video_aspect((dvdnav_t *)nav->handle);
+
+   for (i = 0; i < group_count; i++)
+   {
+      if ((video_aspect == 2u && (display_types[i] & 0x01u)) ||
+            (video_aspect != 2u && display_types[i] == 0u))
+      {
+         group_index = i;
+         break;
+      }
+   }
+
    count = pci->hli.hl_gi.btn_ns & 0x3fu;
+   if (count > buttons_per_group)
+      count = buttons_per_group;
    if (count > DEEVEE_DVD_MAX_MENU_BUTTONS)
       count = DEEVEE_DVD_MAX_MENU_BUTTONS;
 
    memset(buttons, 0, DEEVEE_DVD_MAX_MENU_BUTTONS * sizeof(buttons[0]));
    for (i = 0; i < count; i++)
    {
-      const btni_t *source = &pci->hli.btnit[i];
+      const btni_t *source = &pci->hli.btnit[
+         (size_t)group_index * buttons_per_group + i];
       struct deevee_dvd_menu_button *target = &buttons[i];
 
       target->number = i + 1u;

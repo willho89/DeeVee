@@ -218,6 +218,7 @@ bool retro_load_game(const struct retro_game_info *game)
    deevee_log(RETRO_LOG_INFO,
          "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
          "audio_payloads=%llu, decoded_frames=%llu, queued=%llu, "
+         "spu_payloads=%llu spu_ready=%u spu_rects=%u spu_stream=0x%02x "
          "rate_code=%u frame_ticks=%u, frame=%ux%u, pixfmt=%d, "
          "buttons=%u, active=%u, command_status=%s.\n",
          deevee_core_menu_playback_active(&core) ? "active" : "inactive",
@@ -227,6 +228,10 @@ bool retro_load_game(const struct retro_game_info *game)
          (unsigned long long)deevee_core_audio_payload_count(&core),
          (unsigned long long)deevee_core_menu_frames_decoded(&core),
          (unsigned long long)deevee_core_queued_frames(&core),
+         (unsigned long long)deevee_core_subpicture_payload_count(&core),
+         deevee_core_subpicture_frame_ready(&core) ? 1u : 0u,
+         deevee_core_subpicture_rect_count(&core),
+         deevee_core_active_subpicture_stream(&core),
          deevee_core_video_frame_rate_code(&core),
          deevee_core_video_frame_duration_ticks(&core),
          deevee_core_menu_last_frame_width(&core),
@@ -312,7 +317,9 @@ void retro_run(void)
             "active=%u confirmed=%u command_status=%s "
             "audio_payloads=%llu audio_packets=%llu "
             "audio_frames=%llu audio_buffer=%llu audio_errors=%llu "
-            "audio_underruns=%llu audio_rate=%u audio_channels=%u.\n",
+            "audio_underruns=%llu audio_rate=%u audio_channels=%u "
+            "spu_payloads=%llu spu_ready=%u spu_rects=%u "
+            "spu_stream=0x%02x spu_errors=%llu.\n",
             deevee_core_menu_playback_active(&core) ? "active" : "inactive",
             deevee_core_menu_playback_source(&core),
             (unsigned long long)deevee_core_menu_packets_sent(&core),
@@ -339,7 +346,12 @@ void retro_run(void)
             (unsigned long long)deevee_core_audio_decode_errors(&core),
             (unsigned long long)deevee_core_audio_underruns(&core),
             deevee_core_audio_last_sample_rate(&core),
-            deevee_core_audio_last_channels(&core));
+            deevee_core_audio_last_channels(&core),
+            (unsigned long long)deevee_core_subpicture_payload_count(&core),
+            deevee_core_subpicture_frame_ready(&core) ? 1u : 0u,
+            deevee_core_subpicture_rect_count(&core),
+            deevee_core_active_subpicture_stream(&core),
+            (unsigned long long)deevee_core_subpicture_decode_errors(&core));
 
    if (video_cb)
       video_cb(video.pixels, video.width, video.height, video.pitch);

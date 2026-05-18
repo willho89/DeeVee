@@ -12,6 +12,7 @@
 #include "deevee_dvd.h"
 #include "deevee_dvdnav.h"
 #include "deevee_nav.h"
+#include "deevee_subpicture.h"
 #include "deevee_video.h"
 
 #define DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY 8u
@@ -46,6 +47,15 @@ struct deevee_audio_payload_chunk
    size_t size;
 };
 
+struct deevee_subpicture_payload_chunk
+{
+   size_t offset;
+   size_t size;
+   bool has_pts;
+   int64_t pts;
+   uint8_t stream_id;
+};
+
 struct deevee_decoded_video_frame
 {
    uint32_t *pixels;
@@ -74,6 +84,8 @@ struct deevee_core
    uint32_t *decoder_output_pixels;
    struct deevee_decoded_video_frame frame_queue[
       DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY];
+   uint32_t *menu_base_pixels;
+   bool menu_base_pixels_valid;
    size_t frame_queue_head;
    size_t frame_queue_count;
    int64_t frame_clock_pts;
@@ -99,8 +111,35 @@ struct deevee_core
    size_t audio_chunk_capacity;
    size_t next_audio_chunk;
    uint64_t audio_payload_packets;
+   uint8_t *subpicture_payloads;
+   size_t subpicture_payload_size;
+   size_t subpicture_payload_capacity;
+   struct deevee_subpicture_payload_chunk *subpicture_chunks;
+   size_t subpicture_chunk_count;
+   size_t subpicture_chunk_capacity;
+   size_t next_subpicture_chunk;
+   uint64_t subpicture_payload_packets;
+   struct deevee_subpicture_decoder subpicture;
+   struct deevee_subpicture_frame subpicture_frame;
+   uint8_t *subpicture_assembly;
+   size_t subpicture_assembly_size;
+   size_t subpicture_assembly_capacity;
+   size_t subpicture_assembly_expected_size;
+   bool subpicture_assembly_has_pts;
+   int64_t subpicture_assembly_pts;
+   uint8_t active_subpicture_stream;
+   bool has_active_subpicture_stream;
+   bool subpicture_frame_ready;
+   uint64_t subpicture_decode_errors;
+   uint8_t active_button_color_table;
+   bool has_active_button_color_table;
+   uint32_t subpicture_clut[16];
+   uint32_t select_color_table[3];
+   bool has_subpicture_clut;
+   bool has_select_color_table;
    unsigned menu_frame_hold;
    unsigned menu_frame_repeat;
+   uint8_t video_aspect_ratio_code;
    uint8_t video_frame_rate_code;
    unsigned video_frame_duration_ticks;
    char menu_playback_source[32];
@@ -160,6 +199,11 @@ uint64_t deevee_core_audio_decode_errors(const struct deevee_core *core);
 uint64_t deevee_core_audio_underruns(const struct deevee_core *core);
 unsigned deevee_core_audio_last_sample_rate(const struct deevee_core *core);
 unsigned deevee_core_audio_last_channels(const struct deevee_core *core);
+uint64_t deevee_core_subpicture_payload_count(const struct deevee_core *core);
+uint64_t deevee_core_subpicture_decode_errors(const struct deevee_core *core);
+bool deevee_core_subpicture_frame_ready(const struct deevee_core *core);
+unsigned deevee_core_subpicture_rect_count(const struct deevee_core *core);
+unsigned deevee_core_active_subpicture_stream(const struct deevee_core *core);
 unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core);
 unsigned deevee_core_video_frame_duration_ticks(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core);

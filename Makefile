@@ -57,8 +57,8 @@ $(TEST_DISC_EXE): tests/test_disc.c src/deevee_disc.c src/deevee_disc.h src/deev
 $(TEST_DECODER_EXE): tests/test_decoder.c src/deevee_decoder.c src/deevee_decoder.h
 	$(CC) $(CFLAGS) -o $@ tests/test_decoder.c src/deevee_decoder.c $(LDFLAGS)
 
-$(PROBE_EXE): tools/deevee_probe.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h src/deevee_audio.c src/deevee_audio.h src/deevee_dvdnav.c src/deevee_dvdnav.h
-	$(CC) $(CFLAGS) -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c src/deevee_decoder.c src/deevee_audio.c src/deevee_dvdnav.c $(CHD_SOURCES_C) $(LDFLAGS)
+$(PROBE_EXE): tools/deevee_probe.c src/deevee_disc.c src/deevee_disc.h src/deevee_dvd.c src/deevee_dvd.h src/deevee_iso.c src/deevee_iso.h src/deevee_content.c src/deevee_content.h src/deevee_audio.c src/deevee_audio.h src/deevee_dvdnav.c src/deevee_dvdnav.h src/deevee_subpicture.c src/deevee_subpicture.h
+	$(CC) $(CFLAGS) -o $@ tools/deevee_probe.c src/deevee_disc.c src/deevee_dvd.c src/deevee_iso.c src/deevee_content.c src/deevee_decoder.c src/deevee_audio.c src/deevee_dvdnav.c src/deevee_subpicture.c $(CHD_SOURCES_C) $(LDFLAGS)
 
 probe: $(PROBE_EXE)
 
