@@ -165,6 +165,12 @@ enum deevee_dvdnav_status deevee_dvdnav_next(struct deevee_dvdnav *nav,
 
    event->event = nav_event;
    event->length = length;
+   if (nav_event == DVDNAV_SPU_CLUT_CHANGE && length >= 64)
+   {
+      memcpy(nav->current_spu_clut, event->data,
+            sizeof(nav->current_spu_clut));
+      nav->has_current_spu_clut = true;
+   }
    return DEEVEE_DVDNAV_OK;
 #else
    (void)nav;
@@ -188,8 +194,18 @@ bool deevee_dvdnav_menu_call_root(struct deevee_dvdnav *nav)
 bool deevee_dvdnav_previous_chapter(struct deevee_dvdnav *nav)
 {
 #if HAVE_DVDNAV
-   return nav && nav->handle &&
-      dvdnav_prev_pg_search((dvdnav_t *)nav->handle) == DVDNAV_STATUS_OK;
+   int32_t title = 0;
+   int32_t part = 0;
+
+   if (!nav || !nav->handle)
+      return false;
+
+   if (dvdnav_current_title_info((dvdnav_t *)nav->handle, &title, &part) ==
+         DVDNAV_STATUS_OK && title > 0 && part > 1)
+      return dvdnav_part_search((dvdnav_t *)nav->handle, part - 1) ==
+         DVDNAV_STATUS_OK;
+
+   return dvdnav_prev_pg_search((dvdnav_t *)nav->handle) == DVDNAV_STATUS_OK;
 #else
    (void)nav;
    return false;
@@ -199,10 +215,302 @@ bool deevee_dvdnav_previous_chapter(struct deevee_dvdnav *nav)
 bool deevee_dvdnav_next_chapter(struct deevee_dvdnav *nav)
 {
 #if HAVE_DVDNAV
-   return nav && nav->handle &&
-      dvdnav_next_pg_search((dvdnav_t *)nav->handle) == DVDNAV_STATUS_OK;
+   int32_t title = 0;
+   int32_t part = 0;
+   int32_t parts = 0;
+
+   if (!nav || !nav->handle)
+      return false;
+
+   if (dvdnav_current_title_info((dvdnav_t *)nav->handle, &title, &part) ==
+         DVDNAV_STATUS_OK && title > 0 &&
+         dvdnav_get_number_of_parts((dvdnav_t *)nav->handle, title, &parts) ==
+            DVDNAV_STATUS_OK && part > 0 && part < parts)
+      return dvdnav_part_search((dvdnav_t *)nav->handle, part + 1) ==
+         DVDNAV_STATUS_OK;
+
+   return dvdnav_next_pg_search((dvdnav_t *)nav->handle) == DVDNAV_STATUS_OK;
 #else
    (void)nav;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_scan_seconds(struct deevee_dvdnav *nav, int seconds)
+{
+#if HAVE_DVDNAV
+   int64_t current_time;
+   int64_t target_time;
+
+   if (!nav || !nav->handle || !seconds)
+      return false;
+
+   current_time = dvdnav_get_current_time((dvdnav_t *)nav->handle);
+   if (current_time < 0)
+      return false;
+
+   target_time = current_time + (int64_t)seconds * 90000;
+   if (target_time < 0)
+      target_time = 0;
+
+   return dvdnav_time_search((dvdnav_t *)nav->handle,
+      (uint64_t)target_time) == DVDNAV_STATUS_OK;
+#else
+   (void)nav;
+   (void)seconds;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_play_title_part(struct deevee_dvdnav *nav, int title,
+      int part)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle || title <= 0)
+      return false;
+   if (part <= 0)
+      part = 1;
+
+   return dvdnav_part_play((dvdnav_t *)nav->handle, title, part) ==
+      DVDNAV_STATUS_OK;
+#else
+   (void)nav;
+   (void)title;
+   (void)part;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_read_position(struct deevee_dvdnav *nav, int *title,
+      int *part, int *parts, int64_t *time_ticks)
+{
+#if HAVE_DVDNAV
+   int32_t current_title = 0;
+   int32_t current_part = 0;
+   int32_t current_parts = 0;
+
+   if (title)
+      *title = 0;
+   if (part)
+      *part = 0;
+   if (parts)
+      *parts = 0;
+   if (time_ticks)
+      *time_ticks = -1;
+
+   if (!nav || !nav->handle)
+      return false;
+
+   if (dvdnav_current_title_info((dvdnav_t *)nav->handle, &current_title,
+            &current_part) != DVDNAV_STATUS_OK)
+      return false;
+
+   if (current_title > 0)
+      (void)dvdnav_get_number_of_parts((dvdnav_t *)nav->handle,
+            current_title, &current_parts);
+
+   if (title)
+      *title = current_title;
+   if (part)
+      *part = current_part;
+   if (parts)
+      *parts = current_parts;
+   if (time_ticks)
+      *time_ticks = dvdnav_get_current_time((dvdnav_t *)nav->handle);
+
+   return true;
+#else
+   (void)nav;
+   if (title)
+      *title = 0;
+   if (part)
+      *part = 0;
+   if (parts)
+      *parts = 0;
+   if (time_ticks)
+      *time_ticks = -1;
+   return false;
+#endif
+}
+
+int deevee_dvdnav_stream_count(struct deevee_dvdnav *nav, bool audio)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle)
+      return 0;
+
+   return dvdnav_get_number_of_streams((dvdnav_t *)nav->handle,
+      audio ? DVD_AUDIO_STREAM : DVD_SUBTITLE_STREAM);
+#else
+   (void)nav;
+   (void)audio;
+   return 0;
+#endif
+}
+
+int deevee_dvdnav_active_stream(struct deevee_dvdnav *nav, bool audio)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle)
+      return -1;
+
+   return audio ? dvdnav_get_active_audio_stream((dvdnav_t *)nav->handle) :
+      dvdnav_get_active_spu_stream((dvdnav_t *)nav->handle);
+#else
+   (void)nav;
+   (void)audio;
+   return -1;
+#endif
+}
+
+bool deevee_dvdnav_set_active_stream(struct deevee_dvdnav *nav, bool audio,
+      int stream)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle || stream < 0)
+      return false;
+
+   return dvdnav_set_active_stream((dvdnav_t *)nav->handle, (uint8_t)stream,
+      audio ? DVD_AUDIO_STREAM : DVD_SUBTITLE_STREAM) == DVDNAV_STATUS_OK;
+#else
+   (void)nav;
+   (void)audio;
+   (void)stream;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_set_spu_visible(struct deevee_dvdnav *nav, bool visible)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle)
+      return false;
+
+   return dvdnav_toggle_spu_stream((dvdnav_t *)nav->handle,
+      visible ? 1 : 0) == DVDNAV_STATUS_OK;
+#else
+   (void)nav;
+   (void)visible;
+   return false;
+#endif
+}
+
+uint16_t deevee_dvdnav_stream_language(struct deevee_dvdnav *nav, bool audio,
+      int logical_stream)
+{
+#if HAVE_DVDNAV
+   if (!nav || !nav->handle || logical_stream < 0)
+      return 0xffffu;
+
+   return audio ?
+      dvdnav_audio_stream_to_lang((dvdnav_t *)nav->handle,
+         (uint8_t)logical_stream) :
+      dvdnav_spu_stream_to_lang((dvdnav_t *)nav->handle,
+         (uint8_t)logical_stream);
+#else
+   (void)nav;
+   (void)audio;
+   (void)logical_stream;
+   return 0xffffu;
+#endif
+}
+
+bool deevee_dvdnav_stream_metadata(struct deevee_dvdnav *nav, bool audio,
+      int logical_stream, struct deevee_dvdnav_stream_metadata *metadata)
+{
+#if HAVE_DVDNAV
+   dvdnav_t *handle;
+
+   if (!nav || !nav->handle || logical_stream < 0 || !metadata)
+      return false;
+
+   memset(metadata, 0, sizeof(*metadata));
+   handle = (dvdnav_t *)nav->handle;
+   metadata->language = audio ?
+      dvdnav_audio_stream_to_lang(handle, (uint8_t)logical_stream) :
+      dvdnav_spu_stream_to_lang(handle, (uint8_t)logical_stream);
+   metadata->format = 0xffffu;
+   metadata->channels = 0xffffu;
+
+   if (audio)
+   {
+      audio_attr_t attr;
+
+      metadata->format = dvdnav_audio_stream_format(handle,
+            (uint8_t)logical_stream);
+      metadata->channels = dvdnav_audio_stream_channels(handle,
+            (uint8_t)logical_stream);
+      if (dvdnav_get_audio_attr(handle, (uint8_t)logical_stream, &attr) ==
+            DVDNAV_STATUS_OK)
+      {
+         metadata->code_extension = attr.code_extension;
+         metadata->has_code_extension = true;
+      }
+   }
+   else
+   {
+      subp_attr_t attr;
+
+      if (dvdnav_get_spu_attr(handle, (uint8_t)logical_stream, &attr) ==
+            DVDNAV_STATUS_OK)
+      {
+         metadata->code_extension = attr.code_extension;
+         metadata->has_code_extension = true;
+      }
+   }
+
+   return true;
+#else
+   (void)nav;
+   (void)audio;
+   (void)logical_stream;
+   (void)metadata;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_read_audio_stream_change(
+      const struct deevee_dvdnav_event *event,
+      struct deevee_dvdnav_audio_stream_change *change)
+{
+#if HAVE_DVDNAV
+   const dvdnav_audio_stream_change_event_t *dvd_change;
+
+   if (!event || !change || event->event != DVDNAV_AUDIO_STREAM_CHANGE ||
+         event->length < (int)sizeof(*dvd_change))
+      return false;
+
+   dvd_change = (const dvdnav_audio_stream_change_event_t *)event->data;
+   change->physical = dvd_change->physical;
+   change->logical = dvd_change->logical;
+   return true;
+#else
+   (void)event;
+   (void)change;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_read_spu_stream_change(
+      const struct deevee_dvdnav_event *event,
+      struct deevee_dvdnav_spu_stream_change *change)
+{
+#if HAVE_DVDNAV
+   const dvdnav_spu_stream_change_event_t *dvd_change;
+
+   if (!event || !change || event->event != DVDNAV_SPU_STREAM_CHANGE ||
+         event->length < (int)sizeof(*dvd_change))
+      return false;
+
+   dvd_change = (const dvdnav_spu_stream_change_event_t *)event->data;
+   change->physical_wide = dvd_change->physical_wide;
+   change->physical_letterbox = dvd_change->physical_letterbox;
+   change->physical_pan_scan = dvd_change->physical_pan_scan;
+   change->logical = dvd_change->logical;
+   return true;
+#else
+   (void)event;
+   (void)change;
    return false;
 #endif
 }
@@ -282,7 +590,9 @@ bool deevee_dvdnav_button(struct deevee_dvdnav *nav,
 
 bool deevee_dvdnav_read_buttons(struct deevee_dvdnav *nav,
       struct deevee_dvd_menu_button *buttons, uint8_t *button_count,
-      uint8_t *active_button)
+      uint8_t *active_button, uint32_t *select_color_table,
+      bool *has_select_color_table, uint32_t *spu_clut,
+      bool *has_spu_clut)
 {
 #if HAVE_DVDNAV
    pci_t *pci;
@@ -352,6 +662,21 @@ bool deevee_dvdnav_read_buttons(struct deevee_dvdnav *nav,
          DVDNAV_STATUS_OK)
       highlight = pci->hli.hl_gi.fosl_btnn & 0x3f;
 
+   if (select_color_table)
+   {
+      for (i = 0; i < 3u; i++)
+         select_color_table[i] = pci->hli.btn_colit.btn_coli[i][0];
+      if (has_select_color_table)
+         *has_select_color_table = true;
+   }
+   else if (has_select_color_table)
+      *has_select_color_table = false;
+
+   if (spu_clut && nav->has_current_spu_clut)
+      memcpy(spu_clut, nav->current_spu_clut, 16u * sizeof(spu_clut[0]));
+   if (has_spu_clut)
+      *has_spu_clut = nav->has_current_spu_clut;
+
    *button_count = count;
    *active_button = highlight > 0 && highlight <= count ? (uint8_t)highlight :
       (count ? 1u : 0u);
@@ -361,6 +686,49 @@ bool deevee_dvdnav_read_buttons(struct deevee_dvdnav *nav,
    (void)buttons;
    (void)button_count;
    (void)active_button;
+   (void)select_color_table;
+   (void)has_select_color_table;
+   (void)spu_clut;
+   (void)has_spu_clut;
+   return false;
+#endif
+}
+
+bool deevee_dvdnav_read_highlight(struct deevee_dvdnav *nav,
+      struct deevee_dvdnav_highlight *highlight, bool action_mode)
+{
+#if HAVE_DVDNAV
+   pci_t *pci;
+   int32_t button = 0;
+   dvdnav_highlight_area_t area;
+
+   if (!nav || !nav->handle || !highlight)
+      return false;
+
+   pci = dvdnav_get_current_nav_pci((dvdnav_t *)nav->handle);
+   if (!pci)
+      return false;
+
+   if (dvdnav_get_current_highlight((dvdnav_t *)nav->handle, &button) !=
+         DVDNAV_STATUS_OK || button <= 0)
+      return false;
+
+   if (dvdnav_get_highlight_area(pci, button, action_mode ? 1 : 0, &area) !=
+         DVDNAV_STATUS_OK)
+      return false;
+
+   highlight->x_start = area.sx;
+   highlight->x_end = area.ex;
+   highlight->y_start = area.sy;
+   highlight->y_end = area.ey;
+   highlight->palette = area.palette;
+   highlight->pts = area.pts;
+   highlight->button = area.buttonN;
+   return true;
+#else
+   (void)nav;
+   (void)highlight;
+   (void)action_mode;
    return false;
 #endif
 }

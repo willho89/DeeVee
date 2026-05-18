@@ -389,6 +389,39 @@ static void find_sequence_header(const uint8_t *payload, size_t payload_size,
    }
 }
 
+static uint8_t find_sequence_aspect_ratio_code(const uint8_t *payload,
+      size_t payload_size)
+{
+   size_t i;
+
+   if (!payload)
+      return 0;
+
+   for (i = 0; i + 12 <= payload_size; i++)
+      if (is_start_code(payload + i) && payload[i + 3] == 0xb3)
+         return payload[i + 7] >> 4;
+
+   return 0;
+}
+
+static uint8_t choose_button_group_for_display(uint8_t group_count,
+      const uint8_t display_types[3], uint8_t video_aspect_ratio_code)
+{
+   uint8_t i;
+
+   if (!group_count || group_count > 3u)
+      group_count = 1u;
+
+   for (i = 0; i < group_count; i++)
+   {
+      if ((video_aspect_ratio_code == 3u && (display_types[i] & 0x01u)) ||
+            (video_aspect_ratio_code != 3u && display_types[i] == 0u))
+         return i;
+   }
+
+   return 0;
+}
+
 static enum deevee_dvd_status read_file_bytes(struct deevee_disc *disc,
       const struct deevee_iso_entry *entry, uint32_t byte_offset,
       uint8_t *out, size_t out_size)
@@ -1556,6 +1589,12 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
       {
          probe->video_pes_packets++;
          probe->has_video = true;
+         if (!probe->video_aspect_ratio_code &&
+               read_pes_payload_bounds_from_buffer(data, data_size, offset,
+                  &payload_offset, &payload_size, &packet_end))
+            probe->video_aspect_ratio_code =
+               find_sequence_aspect_ratio_code(data + payload_offset,
+                  payload_size);
       }
       else if (stream_id == 0xbd &&
             read_pes_payload_bounds_from_buffer(data, data_size, offset,
@@ -1590,11 +1629,28 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
             probe->nav_pci_packets++;
             if (pci_size >= 0x8e)
             {
-               uint8_t button_count = pci[0x71];
+               uint8_t group_byte_1 = pci[0x6e];
+               uint8_t group_byte_2 = pci[0x6f];
+               uint8_t display_types[3];
+               uint8_t group_count = (group_byte_1 >> 4) & 0x03u;
+               uint8_t group_index;
+               uint8_t buttons_per_group;
+               uint8_t button_count = pci[0x71] & 0x3fu;
                uint8_t first_button = pci[0x70];
                uint8_t forced_select = pci[0x74];
                uint8_t forced_action = pci[0x75];
                uint8_t i;
+
+               if (!group_count || group_count > 3u)
+                  group_count = 1u;
+               buttons_per_group = (uint8_t)(36u / group_count);
+               display_types[0] = group_byte_1 & 0x07u;
+               display_types[1] = (group_byte_2 >> 4) & 0x07u;
+               display_types[2] = group_byte_2 & 0x07u;
+               group_index = choose_button_group_for_display(group_count,
+                     display_types, probe->video_aspect_ratio_code);
+               probe->button_group_count = group_count;
+               probe->active_button_group = group_index;
 
                if (pci_size >= 0x8e)
                {
@@ -1604,9 +1660,12 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
                   probe->has_select_color_table = true;
                }
 
+               if (button_count > buttons_per_group)
+                  button_count = buttons_per_group;
                if (button_count > DEEVEE_DVD_MAX_MENU_BUTTONS)
                   button_count = DEEVEE_DVD_MAX_MENU_BUTTONS;
-               if (0x8e + (size_t)button_count * 18u <= pci_size)
+               if (0x8e + ((size_t)group_index * buttons_per_group +
+                     button_count) * 18u <= pci_size)
                {
                   probe->starting_button = first_button;
                   probe->forced_select_button = forced_select;
@@ -1615,7 +1674,8 @@ static void probe_menu_render_streams_in_buffer(const uint8_t *data,
 
                   for (i = 0; i < button_count; i++)
                   {
-                     const uint8_t *entry = pci + 0x8e + (size_t)i * 18u;
+                     const uint8_t *entry = pci + 0x8e +
+                        ((size_t)group_index * buttons_per_group + i) * 18u;
                      struct deevee_dvd_menu_button *button =
                         &probe->buttons[i];
 
@@ -2107,6 +2167,21 @@ bool deevee_dvd_decode_playback_target_command(const uint8_t command[8],
          target->vts_number = (uint8_t)current_vts;
          target->vts_title_number = command[5];
          target->ptt_number = 1;
+         if (title_table)
+         {
+            uint8_t i;
+
+            for (i = 0; i < title_table->parsed_title_count; i++)
+            {
+               if (title_table->titles[i].vts_number == target->vts_number &&
+                     title_table->titles[i].vts_title_number ==
+                        target->vts_title_number)
+               {
+                  target->title_number = i + 1u;
+                  break;
+               }
+            }
+         }
          return target->vts_number && target->vts_title_number;
 
       case 0x05: /* JumpVTS_PTT */
@@ -2116,6 +2191,21 @@ bool deevee_dvd_decode_playback_target_command(const uint8_t command[8],
          target->ptt_number = command[3];
          if (!target->ptt_number)
             target->ptt_number = 1;
+         if (title_table)
+         {
+            uint8_t i;
+
+            for (i = 0; i < title_table->parsed_title_count; i++)
+            {
+               if (title_table->titles[i].vts_number == target->vts_number &&
+                     title_table->titles[i].vts_title_number ==
+                        target->vts_title_number)
+               {
+                  target->title_number = i + 1u;
+                  break;
+               }
+            }
+         }
          return target->vts_number && target->vts_title_number;
 
       case 0x06: /* JumpSS */

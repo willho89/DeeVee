@@ -9,7 +9,18 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEEVEE_CORE_VERSION "0.4.1-alpha"
+#define DEEVEE_CORE_VERSION "0.5.0"
+
+#ifndef RETRO_ENVIRONMENT_GET_VARIABLE
+#define RETRO_ENVIRONMENT_GET_VARIABLE 15
+#define RETRO_ENVIRONMENT_SET_VARIABLES 16
+#define RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE 17
+struct retro_variable
+{
+   const char *key;
+   const char *value;
+};
+#endif
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
@@ -21,17 +32,47 @@ static struct retro_log_callback logging;
 static struct deevee_core core;
 static unsigned diagnostic_frame_counter;
 static uint8_t logged_confirmed_button;
+static char current_audio_option[DEEVEE_TRACK_LABEL_LENGTH] = "DVD default";
+static char current_subtitle_option[DEEVEE_TRACK_LABEL_LENGTH] = "DVD default";
+static char audio_option_values[512] =
+   "Audio Track; DVD default|Track 1|Track 2|Track 3|Track 4|"
+   "Track 5|Track 6|Track 7|Track 8";
+static char subtitle_option_values[1536] =
+   "Subtitle Track; DVD default|Off|Track 1|Track 2|Track 3|Track 4|"
+   "Track 5|Track 6|Track 7|Track 8|Track 9|Track 10|Track 11|Track 12|"
+   "Track 13|Track 14|Track 15|Track 16|Track 17|Track 18|Track 19|"
+   "Track 20|Track 21|Track 22|Track 23|Track 24|Track 25|Track 26|"
+   "Track 27|Track 28|Track 29|Track 30|Track 31|Track 32";
+
+static struct retro_variable deevee_core_variables[] = {
+   { "deevee_audio_track", audio_option_values },
+   { "deevee_subtitle_track", subtitle_option_values },
+   { NULL, NULL }
+};
 
 static const struct retro_input_descriptor deevee_input_descriptors[] = {
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP,
+      "Navigate Up" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN,
+      "Navigate Down" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,
+      "Navigate Left" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT,
+      "Navigate Right" },
    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "Confirm" },
    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "Back" },
    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_X, "Home" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,
+      "Play/Pause" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT,
+      "Stop" },
    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L,
       "Previous Chapter" },
    { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R,
       "Next Chapter" },
-   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START,
-      "DVD Menu" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_L2, "Rewind" },
+   { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_R2,
+      "Fast-Forward" },
    { 0, 0, 0, 0, NULL }
 };
 
@@ -84,20 +125,180 @@ static void deevee_update_input(void)
          deevee_key(RETROK_RIGHT));
    deevee_core_set_button(&core, DEEVEE_NAV_CONFIRM,
          deevee_button(RETRO_DEVICE_ID_JOYPAD_B) ||
-         deevee_key(RETROK_x) ||
          deevee_key(RETROK_RETURN));
    deevee_core_set_button(&core, DEEVEE_NAV_CANCEL,
          deevee_button(RETRO_DEVICE_ID_JOYPAD_A) ||
-         deevee_key(RETROK_z));
-   deevee_core_set_button(&core, DEEVEE_NAV_MENU,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_START));
+         deevee_key(RETROK_BACKSPACE) ||
+         deevee_key(RETROK_ESCAPE));
    deevee_core_set_button(&core, DEEVEE_NAV_HOME,
          deevee_button(RETRO_DEVICE_ID_JOYPAD_X) ||
          deevee_key(RETROK_HOME));
+   deevee_core_set_button(&core, DEEVEE_NAV_PLAY_PAUSE,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_START) ||
+         deevee_key(RETROK_SPACE));
+   deevee_core_set_button(&core, DEEVEE_NAV_STOP,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_SELECT));
    deevee_core_set_button(&core, DEEVEE_NAV_PREVIOUS_CHAPTER,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_L));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_L) ||
+         deevee_key(RETROK_PAGEUP));
    deevee_core_set_button(&core, DEEVEE_NAV_NEXT_CHAPTER,
-         deevee_button(RETRO_DEVICE_ID_JOYPAD_R));
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_R) ||
+         deevee_key(RETROK_PAGEDOWN));
+   deevee_core_set_button(&core, DEEVEE_NAV_REWIND,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_L2) ||
+         deevee_key(RETROK_COMMA));
+   deevee_core_set_button(&core, DEEVEE_NAV_FAST_FORWARD,
+         deevee_button(RETRO_DEVICE_ID_JOYPAD_R2) ||
+         deevee_key(RETROK_PERIOD));
+}
+
+static int track_index_from_value(const char *value)
+{
+   int index = 0;
+
+   if (!value || strncmp(value, "Track ", 6) != 0)
+      return -1;
+
+   value += 6;
+   while (*value >= '0' && *value <= '9')
+   {
+      index = index * 10 + (*value - '0');
+      value++;
+   }
+
+   return index > 0 ? index - 1 : -1;
+}
+
+static void append_option_value(char *buffer, size_t buffer_size,
+      const char *value)
+{
+   size_t used;
+
+   if (!buffer || !buffer_size || !value || !value[0])
+      return;
+
+   used = strlen(buffer);
+   if (used >= buffer_size)
+      return;
+   snprintf(buffer + used, buffer_size - used, "|%s", value);
+}
+
+static void deevee_refresh_core_option_labels(void)
+{
+   unsigned i;
+   unsigned count;
+   char fallback[16];
+
+   snprintf(audio_option_values, sizeof(audio_option_values),
+         "Audio Track; DVD default");
+   count = deevee_core_audio_stream_count(&core);
+   if (count)
+   {
+      for (i = 0; i < count; i++)
+         append_option_value(audio_option_values, sizeof(audio_option_values),
+               deevee_core_audio_stream_label(&core, i));
+   }
+   else
+   {
+      for (i = 0; i < DEEVEE_MAX_AUDIO_STREAMS; i++)
+      {
+         snprintf(fallback, sizeof(fallback), "Track %u", i + 1u);
+         append_option_value(audio_option_values, sizeof(audio_option_values),
+               fallback);
+      }
+   }
+
+   snprintf(subtitle_option_values, sizeof(subtitle_option_values),
+         "Subtitle Track; DVD default|Off");
+   count = deevee_core_subpicture_stream_count(&core);
+   if (count)
+   {
+      for (i = 0; i < count; i++)
+         append_option_value(subtitle_option_values,
+               sizeof(subtitle_option_values),
+               deevee_core_subpicture_stream_label(&core, i));
+   }
+   else
+   {
+      for (i = 0; i < DEEVEE_MAX_SUBTITLE_STREAMS; i++)
+      {
+         snprintf(fallback, sizeof(fallback), "Track %u", i + 1u);
+         append_option_value(subtitle_option_values,
+               sizeof(subtitle_option_values), fallback);
+      }
+   }
+
+   if (environ_cb)
+      environ_cb(RETRO_ENVIRONMENT_SET_VARIABLES,
+            (void *)deevee_core_variables);
+   deevee_core_clear_track_options_dirty(&core);
+}
+
+static void deevee_apply_core_options(void)
+{
+   struct retro_variable variable;
+
+   if (!environ_cb)
+      return;
+
+   memset(&variable, 0, sizeof(variable));
+   variable.key = "deevee_audio_track";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) &&
+         variable.value)
+   {
+      bool changed = strcmp(variable.value, current_audio_option) != 0;
+      bool applied = true;
+
+      if (strcmp(variable.value, "DVD default") == 0)
+      {
+         if (changed)
+            applied = deevee_core_set_audio_track(&core, -1);
+      }
+      else if (changed)
+         applied = deevee_core_set_audio_track(&core,
+               track_index_from_value(variable.value));
+      if (applied)
+         snprintf(current_audio_option, sizeof(current_audio_option), "%s",
+               variable.value);
+   }
+
+   memset(&variable, 0, sizeof(variable));
+   variable.key = "deevee_subtitle_track";
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) &&
+         variable.value)
+   {
+      bool changed = strcmp(variable.value, current_subtitle_option) != 0;
+      bool applied = true;
+
+      if (strcmp(variable.value, "DVD default") == 0)
+      {
+         if (changed)
+            applied = deevee_core_set_subtitle_track(&core, -1, true);
+      }
+      else if (strcmp(variable.value, "Off") == 0)
+      {
+         if (changed)
+            applied = deevee_core_set_subtitle_track(&core, -1, false);
+      }
+      else if (changed)
+         applied = deevee_core_set_subtitle_track(&core,
+               track_index_from_value(variable.value), true);
+      if (applied)
+         snprintf(current_subtitle_option, sizeof(current_subtitle_option), "%s",
+               variable.value);
+   }
+}
+
+static void deevee_check_core_options(void)
+{
+   bool updated = false;
+
+   if (!environ_cb)
+      return;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) &&
+         updated)
+      deevee_apply_core_options();
 }
 
 void retro_set_environment(retro_environment_t cb)
@@ -175,6 +376,8 @@ void retro_init(void)
       environ_cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &supports_no_game);
       environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS,
             (void *)deevee_input_descriptors);
+      environ_cb(RETRO_ENVIRONMENT_SET_VARIABLES,
+            (void *)deevee_core_variables);
    }
 
    if (!deevee_core_init(&core))
@@ -215,11 +418,17 @@ bool retro_load_game(const struct retro_game_info *game)
 
    deevee_log(RETRO_LOG_INFO, "DeeVee: loaded %s.\n",
          deevee_core_loaded_content_type(&core));
+   if (deevee_core_track_options_dirty(&core))
+      deevee_refresh_core_option_labels();
+   deevee_apply_core_options();
    deevee_log(RETRO_LOG_INFO,
          "DeeVee: menu playback %s, source=%s, payloads=%u, bytes=%u, "
          "audio_payloads=%llu, decoded_frames=%llu, queued=%llu, "
          "spu_payloads=%llu spu_ready=%u spu_rects=%u spu_stream=0x%02x "
-         "rate_code=%u frame_ticks=%u, frame=%ux%u, pixfmt=%d, "
+         "audio_stream=0x%02x audio_tracks=%u audio_active=%d/%d "
+         "subtitle_tracks=%u subtitle_active=%d/%d subtitle_visible=%u "
+         "rate_code=%u frame_ticks=%u, "
+         "frame=%ux%u, pixfmt=%d, "
          "buttons=%u, active=%u, command_status=%s.\n",
          deevee_core_menu_playback_active(&core) ? "active" : "inactive",
          deevee_core_menu_playback_source(&core),
@@ -232,6 +441,14 @@ bool retro_load_game(const struct retro_game_info *game)
          deevee_core_subpicture_frame_ready(&core) ? 1u : 0u,
          deevee_core_subpicture_rect_count(&core),
          deevee_core_active_subpicture_stream(&core),
+         deevee_core_active_audio_stream(&core),
+         deevee_core_audio_stream_count(&core),
+         deevee_core_active_audio_logical_stream(&core),
+         deevee_core_active_audio_physical_stream(&core),
+         deevee_core_subpicture_stream_count(&core),
+         deevee_core_active_subpicture_logical_stream(&core),
+         deevee_core_active_subpicture_physical_stream(&core),
+         deevee_core_subpicture_visible(&core) ? 1u : 0u,
          deevee_core_video_frame_rate_code(&core),
          deevee_core_video_frame_duration_ticks(&core),
          deevee_core_menu_last_frame_width(&core),
@@ -258,6 +475,9 @@ void retro_unload_game(void)
    deevee_core_unload(&core);
    diagnostic_frame_counter = 0;
    logged_confirmed_button = 0;
+   snprintf(current_audio_option, sizeof(current_audio_option), "DVD default");
+   snprintf(current_subtitle_option, sizeof(current_subtitle_option),
+         "DVD default");
 }
 
 unsigned retro_get_region(void)
@@ -274,7 +494,10 @@ void retro_run(void)
    memset(&audio, 0, sizeof(audio));
 
    deevee_update_input();
+   deevee_check_core_options();
    deevee_core_run(&core, &video, &audio);
+   if (deevee_core_track_options_dirty(&core))
+      deevee_refresh_core_option_labels();
    diagnostic_frame_counter++;
 
    if (deevee_core_menu_confirmed_button(&core) &&
@@ -313,11 +536,16 @@ void retro_run(void)
             "DeeVee: run menu=%s source=%s packets=%llu frames=%llu "
             "displayed=%llu queued=%llu repeated=%llu underruns=%llu "
             "drops=%llu fallback=%llu rate_code=%u frame_ticks=%u "
+            "last_frame_ticks=%u repeat_pict=%d "
+            "dvdnav=%s pos=%s title=%d part=%d/%d time=%lld "
             "frame=%ux%u pixfmt=%d buttons=%u "
             "active=%u confirmed=%u command_status=%s "
             "audio_payloads=%llu audio_packets=%llu "
             "audio_frames=%llu audio_buffer=%llu audio_errors=%llu "
             "audio_underruns=%llu audio_rate=%u audio_channels=%u "
+            "audio_stream=0x%02x "
+            "audio_tracks=%u audio_active=%d/%d "
+            "subtitle_tracks=%u subtitle_active=%d/%d subtitle_visible=%u "
             "spu_payloads=%llu spu_ready=%u spu_rects=%u "
             "spu_stream=0x%02x spu_errors=%llu.\n",
             deevee_core_menu_playback_active(&core) ? "active" : "inactive",
@@ -332,6 +560,14 @@ void retro_run(void)
             (unsigned long long)deevee_core_fallback_timing_frames(&core),
             deevee_core_video_frame_rate_code(&core),
             deevee_core_video_frame_duration_ticks(&core),
+            deevee_core_last_decoded_frame_duration_ticks(&core),
+            deevee_core_last_decoded_repeat_pict(&core),
+            deevee_core_dvdnav_active(&core) ? "active" : "inactive",
+            deevee_core_dvdnav_has_position(&core) ? "valid" : "unknown",
+            deevee_core_dvdnav_title(&core),
+            deevee_core_dvdnav_part(&core),
+            deevee_core_dvdnav_parts(&core),
+            (long long)deevee_core_dvdnav_time_ticks(&core),
             deevee_core_menu_last_frame_width(&core),
             deevee_core_menu_last_frame_height(&core),
             deevee_core_menu_last_pixel_format(&core),
@@ -347,6 +583,14 @@ void retro_run(void)
             (unsigned long long)deevee_core_audio_underruns(&core),
             deevee_core_audio_last_sample_rate(&core),
             deevee_core_audio_last_channels(&core),
+            deevee_core_active_audio_stream(&core),
+            deevee_core_audio_stream_count(&core),
+            deevee_core_active_audio_logical_stream(&core),
+            deevee_core_active_audio_physical_stream(&core),
+            deevee_core_subpicture_stream_count(&core),
+            deevee_core_active_subpicture_logical_stream(&core),
+            deevee_core_active_subpicture_physical_stream(&core),
+            deevee_core_subpicture_visible(&core) ? 1u : 0u,
             (unsigned long long)deevee_core_subpicture_payload_count(&core),
             deevee_core_subpicture_frame_ready(&core) ? 1u : 0u,
             deevee_core_subpicture_rect_count(&core),

@@ -2,9 +2,9 @@
 
 DeeVee is an experimental libretro core for DVD-Video playback. The goal is to load DVD `.iso` and `.chd` images in RetroArch and eventually support DVD menus, extras, navigation, video playback, subtitles, and audio through standard libretro frontends.
 
-Current version: `0.4.1-alpha`.
+Current version: `0.5.0`.
 
-This is not a feature-complete DVD player yet. It is an early playable milestone with real DVD sector access, MPEG-2 video decoding, AC3 audio decoding, basic menu button navigation, CHD support, and targeted submenu handling for the primary test disc. Many DVD VM commands, menu flows, subtitles, and compatibility cases are still incomplete.
+This is not a feature-complete DVD player yet. It is an early playable milestone with real DVD sector access, MPEG-2 video decoding, AC3 audio decoding, menu button navigation, CHD support, DVDNav-backed title/menu navigation, and audio/subtitle track selection. Many DVD VM commands, menu flows, and compatibility cases are still incomplete.
 
 `include/libretro.h` is vendored from upstream `libretro-common` so the scaffold can build without a system libretro install.
 
@@ -20,24 +20,28 @@ Implemented:
 - MPEG-2 video decoding through FFmpeg.
 - AC3 audio decoding through FFmpeg, including stereo downmixing.
 - Basic frame pacing using DVD stream timing information.
-- Keyboard and RetroPad directional menu navigation.
-- Basic visual menu button highlight overlay.
+- Keyboard and RetroPad directional menu navigation and transport controls.
+- DVDNav-backed title, chapter, scan, menu, audio stream, and subtitle stream handling.
+- Audio and subtitle track selection through RetroArch core options when stream metadata is available.
+- DVD subtitle/subpicture decoding and title-video compositing.
+- Basic visual menu button highlight overlay with partial DVD subpicture highlight support.
 - Targeted DVD VM command handling for observed title jumps and some menu/submenu transitions.
 - `tools/deevee_probe` diagnostics for content type, DVD structures, packets, menu commands, video, and audio.
 
 Known limitations:
 
 - DVD VM support is partial. Many commands involving registers, conditions, resume behavior, menu domains, and more complex navigation are not implemented yet.
-- Submenu navigation is still spotty. Some Setup/Special Features paths work or partially work on the main test disc, but broader compatibility is not expected yet.
-- Subtitle/subpicture rendering is not implemented.
-- Menu highlights are diagnostic/basic and are not full DVD subpicture compositing.
+- Submenu navigation and DVD setup flows are still disc-dependent, but broader compatibility is improving through DVDNav integration.
+- Subtitle/subpicture rendering is early and may not match every disc's intended timing, palette, or placement yet.
+- Menu highlights remain incomplete compared with dedicated DVD players.
 - Playback compatibility has mostly been tested against a small set of DVD images with wider testing to come once feature complete on initial test sample.
-- No frontend options exist yet for region behavior, deinterlacing, aspect overrides, language defaults, or subtitle/audio stream selection.
+- No frontend options exist yet for region behavior, deinterlacing, aspect overrides, or language defaults.
 
 ## Releases
 
 The first public checkpoint is `v0.4.0-alpha`.
 This follow-up `v0.4.1-alpha` checkpoint improves DVD menu navigation, menu audio, and non-obstructive menu selection diagnostics.
+The `v0.5.0` checkpoint adds DVDNav-backed transport fixes, audio/subtitle track selection, stream metadata labels, title subtitles, and improved A/V stability.
 
 For Windows RetroArch, download the release ZIP and copy:
 

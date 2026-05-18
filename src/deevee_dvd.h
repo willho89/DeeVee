@@ -206,6 +206,9 @@ struct deevee_dvd_menu_render_probe
    uint32_t nav_pci_packets;
    uint32_t nav_dsi_packets;
    uint8_t first_subpicture_stream_id;
+   uint8_t video_aspect_ratio_code;
+   uint8_t button_group_count;
+   uint8_t active_button_group;
    uint8_t starting_button;
    uint8_t forced_select_button;
    uint8_t forced_action_button;

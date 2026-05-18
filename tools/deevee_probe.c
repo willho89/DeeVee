@@ -56,6 +56,24 @@ static int sector_has_iso_volume_descriptor(const uint8_t *sector)
       memcmp(sector + 1, "CD001", 5) == 0;
 }
 
+static void language_code_to_string(uint16_t code, char out[4])
+{
+   if (!out)
+      return;
+
+   if (code == 0xffffu)
+   {
+      snprintf(out, 4, "--");
+      return;
+   }
+
+   out[0] = (char)((code >> 8) & 0xffu);
+   out[1] = (char)(code & 0xffu);
+   out[2] = '\0';
+   if (out[0] < 'a' || out[0] > 'z' || out[1] < 'a' || out[1] > 'z')
+      snprintf(out, 4, "--");
+}
+
 struct decode_probe_context
 {
    struct deevee_video_decoder *decoder;
@@ -499,10 +517,65 @@ static void print_dvdnav_probe(const struct deevee_content_info *info)
       return;
    }
 
+   {
+      int audio_count = deevee_dvdnav_stream_count(&nav, true);
+      int spu_count = deevee_dvdnav_stream_count(&nav, false);
+      int i;
+
+      printf("  dvdnav_audio_stream_count: %d\n", audio_count);
+      printf("  dvdnav_active_audio_stream: %d\n",
+            deevee_dvdnav_active_stream(&nav, true));
+      for (i = 0; i < audio_count && i < 8; i++)
+      {
+         char lang[4];
+         language_code_to_string(deevee_dvdnav_stream_language(&nav, true, i),
+               lang);
+         printf("  dvdnav_audio_stream_%d_lang: %s\n", i, lang);
+      }
+
+      printf("  dvdnav_subtitle_stream_count: %d\n", spu_count);
+      printf("  dvdnav_active_subtitle_stream: %d\n",
+            deevee_dvdnav_active_stream(&nav, false));
+      for (i = 0; i < spu_count && i < 32; i++)
+      {
+         char lang[4];
+         language_code_to_string(deevee_dvdnav_stream_language(&nav, false, i),
+               lang);
+         printf("  dvdnav_subtitle_stream_%d_lang: %s\n", i, lang);
+      }
+   }
+
    printf("  dvdnav_root_menu_call: %s\n",
          yes_no(deevee_dvdnav_menu_call_root(&nav)));
    read_dvdnav_probe_window(&nav, "root", 64u, &pre_blocks,
          &pre_nav_packets, &pre_video_blocks, &pre_highlights, 1);
+   {
+      int audio_count = deevee_dvdnav_stream_count(&nav, true);
+      int spu_count = deevee_dvdnav_stream_count(&nav, false);
+      int i;
+
+      printf("  dvdnav_post_root_audio_stream_count: %d\n", audio_count);
+      printf("  dvdnav_post_root_active_audio_stream: %d\n",
+            deevee_dvdnav_active_stream(&nav, true));
+      for (i = 0; i < audio_count && i < 8; i++)
+      {
+         char lang[4];
+         language_code_to_string(deevee_dvdnav_stream_language(&nav, true, i),
+               lang);
+         printf("  dvdnav_post_root_audio_stream_%d_lang: %s\n", i, lang);
+      }
+
+      printf("  dvdnav_post_root_subtitle_stream_count: %d\n", spu_count);
+      printf("  dvdnav_post_root_active_subtitle_stream: %d\n",
+            deevee_dvdnav_active_stream(&nav, false));
+      for (i = 0; i < spu_count && i < 32; i++)
+      {
+         char lang[4];
+         language_code_to_string(deevee_dvdnav_stream_language(&nav, false, i),
+               lang);
+         printf("  dvdnav_post_root_subtitle_stream_%d_lang: %s\n", i, lang);
+      }
+   }
 
    select_ok = deevee_dvdnav_select_button(&nav, 2);
    if (!select_ok)
@@ -611,6 +684,12 @@ static void print_menu_vob_render_probe(struct deevee_disc *disc,
          yes_no(render_probe.has_nav));
    printf("  menu_vob_candidate_%u_render_has_subpicture: %s\n", index,
          yes_no(render_probe.has_subpicture));
+   printf("  menu_vob_candidate_%u_render_aspect_code: %u\n", index,
+         render_probe.video_aspect_ratio_code);
+   printf("  menu_vob_candidate_%u_render_button_groups: %u\n", index,
+         render_probe.button_group_count);
+   printf("  menu_vob_candidate_%u_render_active_button_group: %u\n", index,
+         render_probe.active_button_group);
 
    for (button_index = 0; button_index < render_probe.button_count;
          button_index++)
@@ -1348,6 +1427,12 @@ static void print_disc_probe(const struct deevee_content_info *info)
                      render_probe.nav_dsi_packets);
                printf("  vts_menu_render_first_subpicture_stream_id: 0x%02x\n",
                      render_probe.first_subpicture_stream_id);
+               printf("  vts_menu_render_aspect_code: %u\n",
+                     render_probe.video_aspect_ratio_code);
+               printf("  vts_menu_render_button_groups: %u\n",
+                     render_probe.button_group_count);
+               printf("  vts_menu_render_active_button_group: %u\n",
+                     render_probe.active_button_group);
                printf("  vts_menu_render_starting_button: %u\n",
                      render_probe.starting_button);
                printf("  vts_menu_render_forced_select_button: %u\n",

@@ -32,7 +32,8 @@ static void decode_audio_until_buffered(struct deevee_core *core,
 static bool open_menu_decoder(struct deevee_core *core);
 static void sync_dvdnav_buttons(struct deevee_core *core);
 static bool append_dvdnav_events(struct deevee_core *core,
-      unsigned max_events, size_t min_new_video_chunks);
+      unsigned max_events, size_t min_new_video_chunks,
+      size_t min_new_audio_chunks);
 static bool reset_dvdnav_decode_after_control(struct deevee_core *core);
 static bool prepare_title_playback_from_target(struct deevee_core *core,
       const struct deevee_dvd_playback_target *target);
@@ -45,6 +46,333 @@ static bool prepare_menu_playback_from_vmgm_pgc(struct deevee_core *core,
       const struct deevee_content_info *content, unsigned pgc_index);
 static bool prepare_any_menu_playback(struct deevee_core *core,
       const struct deevee_content_info *content);
+static void refresh_track_inventory(struct deevee_core *core);
+
+static void update_dvdnav_position(struct deevee_core *core)
+{
+   if (!core || !core->dvdnav_active)
+   {
+      if (core)
+      {
+         core->dvdnav_has_position = false;
+         core->dvdnav_title = 0;
+         core->dvdnav_part = 0;
+         core->dvdnav_parts = 0;
+         core->dvdnav_time_ticks = -1;
+      }
+      return;
+   }
+
+   core->dvdnav_has_position = deevee_dvdnav_read_position(&core->dvdnav,
+         &core->dvdnav_title, &core->dvdnav_part, &core->dvdnav_parts,
+         &core->dvdnav_time_ticks);
+   refresh_track_inventory(core);
+}
+
+static void language_code_to_string(uint16_t code, char out[4])
+{
+   if (!out)
+      return;
+
+   if (code == 0xffffu)
+   {
+      snprintf(out, 4, "--");
+      return;
+   }
+
+   out[0] = (char)((code >> 8) & 0xffu);
+   out[1] = (char)(code & 0xffu);
+   out[2] = '\0';
+   if (out[0] < 'a' || out[0] > 'z' || out[1] < 'a' || out[1] > 'z')
+      snprintf(out, 4, "--");
+}
+
+static const char *audio_format_label(uint16_t format)
+{
+   switch (format)
+   {
+      case 0:
+         return "AC3";
+      case 2:
+         return "MPEG-1";
+      case 3:
+         return "MPEG-2";
+      case 4:
+         return "LPCM";
+      case 6:
+         return "DTS";
+      default:
+         return "";
+   }
+}
+
+static const char *audio_code_extension_label(uint8_t code_extension)
+{
+   switch (code_extension)
+   {
+      case 2:
+         return "Visually impaired";
+      case 3:
+         return "Commentary";
+      case 4:
+         return "Alt commentary";
+      default:
+         return "";
+   }
+}
+
+static const char *subpicture_code_extension_label(uint8_t code_extension)
+{
+   switch (code_extension)
+   {
+      case 2:
+         return "Large";
+      case 3:
+         return "Children";
+      case 5:
+         return "Captions";
+      case 6:
+         return "Large captions";
+      case 7:
+         return "Children captions";
+      case 9:
+         return "Forced";
+      case 13:
+         return "Commentary";
+      case 14:
+         return "Large commentary";
+      case 15:
+         return "Children commentary";
+      default:
+         return "";
+   }
+}
+
+static void append_label_part(char *label, size_t label_size,
+      bool *has_detail, const char *part)
+{
+   size_t used;
+
+   if (!label || !label_size || !part || !part[0])
+      return;
+
+   used = strlen(label);
+   if (used >= label_size)
+      return;
+   snprintf(label + used, label_size - used, "%s%s",
+         has_detail && *has_detail ? ", " : " (", part);
+   if (has_detail)
+      *has_detail = true;
+}
+
+static void finish_track_label(char *label, size_t label_size, bool has_detail)
+{
+   size_t used;
+
+   if (!label || !label_size || !has_detail)
+      return;
+
+   used = strlen(label);
+   if (used + 1u < label_size)
+      snprintf(label + used, label_size - used, ")");
+}
+
+static void format_audio_track_label(char *label, size_t label_size,
+      unsigned index, const struct deevee_dvdnav_stream_metadata *metadata)
+{
+   char detail[16];
+   char lang[4];
+   bool has_detail = false;
+   const char *format;
+   const char *code_extension;
+
+   if (!label || !label_size)
+      return;
+
+   snprintf(label, label_size, "Track %u", index + 1u);
+   if (!metadata)
+      return;
+
+   language_code_to_string(metadata->language, lang);
+   if (strcmp(lang, "--") != 0)
+      append_label_part(label, label_size, &has_detail, lang);
+
+   format = audio_format_label(metadata->format);
+   if (format[0])
+      append_label_part(label, label_size, &has_detail, format);
+
+   if (metadata->channels != 0xffffu && metadata->channels > 0u)
+   {
+      snprintf(detail, sizeof(detail), "%uch", (unsigned)metadata->channels);
+      append_label_part(label, label_size, &has_detail, detail);
+   }
+
+   code_extension = metadata->has_code_extension ?
+      audio_code_extension_label(metadata->code_extension) : "";
+   if (code_extension[0])
+      append_label_part(label, label_size, &has_detail, code_extension);
+   finish_track_label(label, label_size, has_detail);
+}
+
+static void format_subpicture_track_label(char *label, size_t label_size,
+      unsigned index, const struct deevee_dvdnav_stream_metadata *metadata)
+{
+   char lang[4];
+   bool has_detail = false;
+   const char *code_extension;
+
+   if (!label || !label_size)
+      return;
+
+   snprintf(label, label_size, "Track %u", index + 1u);
+   if (!metadata)
+      return;
+
+   language_code_to_string(metadata->language, lang);
+   if (strcmp(lang, "--") != 0)
+      append_label_part(label, label_size, &has_detail, lang);
+
+   code_extension = metadata->has_code_extension ?
+      subpicture_code_extension_label(metadata->code_extension) : "";
+   if (code_extension[0])
+      append_label_part(label, label_size, &has_detail, code_extension);
+   finish_track_label(label, label_size, has_detail);
+}
+
+static void reset_track_inventory(struct deevee_core *core)
+{
+   if (!core)
+      return;
+
+   core->active_audio_logical_stream = -1;
+   core->active_audio_physical_stream = -1;
+   core->forced_audio_physical_stream = -1;
+   core->audio_stream_forced = false;
+   core->audio_stream_count = 0;
+   memset(core->audio_streams, 0, sizeof(core->audio_streams));
+   core->active_subpicture_logical_stream = -1;
+   core->active_subpicture_physical_stream = -1;
+   core->forced_subpicture_physical_stream = -1;
+   core->subpicture_stream_forced = false;
+   core->subpicture_visible = true;
+   core->subpicture_stream_count = 0;
+   memset(core->subpicture_streams, 0, sizeof(core->subpicture_streams));
+   core->track_options_dirty = true;
+}
+
+static void refresh_track_inventory(struct deevee_core *core)
+{
+   unsigned i;
+   int count;
+   int active;
+
+   if (!core || !core->dvdnav_active)
+      return;
+
+   count = deevee_dvdnav_stream_count(&core->dvdnav, true);
+   if (count < 0)
+      count = 0;
+   if (count > (int)DEEVEE_MAX_AUDIO_STREAMS)
+      count = (int)DEEVEE_MAX_AUDIO_STREAMS;
+   if (core->audio_stream_count != (unsigned)count)
+      core->track_options_dirty = true;
+   core->audio_stream_count = (unsigned)count;
+   for (i = 0; i < core->audio_stream_count; i++)
+   {
+      struct deevee_dvdnav_stream_metadata metadata;
+      char label[DEEVEE_TRACK_LABEL_LENGTH];
+      bool has_metadata;
+
+      core->audio_streams[i].present = true;
+      core->audio_streams[i].logical = (int)i;
+      core->audio_streams[i].physical = (int)i;
+      has_metadata = deevee_dvdnav_stream_metadata(&core->dvdnav, true,
+            (int)i, &metadata);
+      if (!has_metadata)
+      {
+         memset(&metadata, 0, sizeof(metadata));
+         metadata.language = deevee_dvdnav_stream_language(&core->dvdnav,
+               true, (int)i);
+         metadata.format = 0xffffu;
+         metadata.channels = 0xffffu;
+      }
+      core->audio_streams[i].language = metadata.language;
+      core->audio_streams[i].format = metadata.format;
+      core->audio_streams[i].channels = metadata.channels;
+      core->audio_streams[i].code_extension = metadata.code_extension;
+      core->audio_streams[i].has_code_extension =
+         metadata.has_code_extension;
+      format_audio_track_label(label, sizeof(label), i, &metadata);
+      if (strcmp(core->audio_streams[i].label, label) != 0)
+         core->track_options_dirty = true;
+      snprintf(core->audio_streams[i].label,
+            sizeof(core->audio_streams[i].label), "%s", label);
+   }
+
+   count = deevee_dvdnav_stream_count(&core->dvdnav, false);
+   if (count < 0)
+      count = 0;
+   if (count > (int)DEEVEE_MAX_SUBTITLE_STREAMS)
+      count = (int)DEEVEE_MAX_SUBTITLE_STREAMS;
+   if (core->subpicture_stream_count != (unsigned)count)
+      core->track_options_dirty = true;
+   core->subpicture_stream_count = (unsigned)count;
+   for (i = 0; i < core->subpicture_stream_count; i++)
+   {
+      struct deevee_dvdnav_stream_metadata metadata;
+      char label[DEEVEE_TRACK_LABEL_LENGTH];
+      bool has_metadata;
+
+      core->subpicture_streams[i].present = true;
+      core->subpicture_streams[i].logical = (int)i;
+      core->subpicture_streams[i].physical = (int)i;
+      has_metadata = deevee_dvdnav_stream_metadata(&core->dvdnav, false,
+            (int)i, &metadata);
+      if (!has_metadata)
+      {
+         memset(&metadata, 0, sizeof(metadata));
+         metadata.language = deevee_dvdnav_stream_language(&core->dvdnav,
+               false, (int)i);
+         metadata.format = 0xffffu;
+         metadata.channels = 0xffffu;
+      }
+      core->subpicture_streams[i].language = metadata.language;
+      core->subpicture_streams[i].format = metadata.format;
+      core->subpicture_streams[i].channels = metadata.channels;
+      core->subpicture_streams[i].code_extension = metadata.code_extension;
+      core->subpicture_streams[i].has_code_extension =
+         metadata.has_code_extension;
+      format_subpicture_track_label(label, sizeof(label), i, &metadata);
+      if (strcmp(core->subpicture_streams[i].label, label) != 0)
+         core->track_options_dirty = true;
+      snprintf(core->subpicture_streams[i].label,
+            sizeof(core->subpicture_streams[i].label), "%s", label);
+   }
+
+   active = deevee_dvdnav_active_stream(&core->dvdnav, true);
+   if (active >= 0 && active < (int)DEEVEE_MAX_AUDIO_STREAMS)
+   {
+      if (!core->audio_stream_forced)
+      {
+         core->active_audio_physical_stream = active;
+         core->active_audio_logical_stream = active;
+         core->active_audio_stream = (uint8_t)(0x80u + (unsigned)active);
+         core->has_active_audio_stream = true;
+      }
+   }
+
+   active = deevee_dvdnav_active_stream(&core->dvdnav, false);
+   if (active >= 0 && active < (int)DEEVEE_MAX_SUBTITLE_STREAMS)
+   {
+      if (!core->subpicture_stream_forced)
+      {
+         core->active_subpicture_physical_stream = active;
+         core->active_subpicture_logical_stream = active;
+         core->active_subpicture_stream = (uint8_t)(0x20u + (unsigned)active);
+         core->has_active_subpicture_stream = true;
+      }
+   }
+}
 
 static bool content_is_disc_image(const struct deevee_content_info *content)
 {
@@ -112,17 +440,34 @@ static unsigned display_frame_duration_ticks(const struct deevee_core *core,
    return duration;
 }
 
-static unsigned display_hold_ticks_from_duration(unsigned duration)
+static unsigned frame_duration_with_repeat_pict(const struct deevee_core *core,
+      int repeat_pict)
+{
+   unsigned base = fallback_frame_duration_ticks(core);
+
+   if (repeat_pict <= 0)
+      return base;
+   return clamp_frame_duration_ticks(base +
+      ((uint64_t)base * (uint64_t)repeat_pict + 1u) / 2u);
+}
+
+static unsigned display_hold_ticks_from_duration(struct deevee_core *core,
+      unsigned duration)
 {
    unsigned display_runs;
+   uint64_t accumulated;
 
    if (!duration)
       return 0;
 
-   display_runs = (duration + (DEEVEE_CLOCK_TICKS_PER_RUN / 2u)) /
-      DEEVEE_CLOCK_TICKS_PER_RUN;
+   accumulated = (uint64_t)duration +
+      (core ? core->display_frame_tick_remainder : 0u);
+   display_runs = (unsigned)(accumulated / DEEVEE_CLOCK_TICKS_PER_RUN);
    if (display_runs < 1u)
       display_runs = 1u;
+   if (core)
+      core->display_frame_tick_remainder =
+         (unsigned)(accumulated % DEEVEE_CLOCK_TICKS_PER_RUN);
 
    return (display_runs - 1u) * DEEVEE_CLOCK_TICKS_PER_RUN;
 }
@@ -173,6 +518,7 @@ static void reset_frame_queue(struct deevee_core *core)
       core->frame_queue[i].has_pts = false;
       core->frame_queue[i].pts = 0;
       core->frame_queue[i].display_ticks = fallback_frame_duration_ticks(core);
+      core->frame_queue[i].repeat_pict = 0;
       core->frame_queue[i].width = 0;
       core->frame_queue[i].height = 0;
       core->frame_queue[i].pixel_format = 0;
@@ -183,11 +529,14 @@ static void reset_frame_queue(struct deevee_core *core)
    core->frame_clock_pts = 0;
    core->frame_clock_has_pts = false;
    core->display_frame_ticks_remaining = 0;
+   core->display_frame_tick_remainder = 0;
    core->displayed_frames = 0;
    core->repeated_frames = 0;
    core->decode_underruns = 0;
    core->queue_drops = 0;
    core->fallback_timing_frames = 0;
+   core->last_decoded_frame_duration_ticks = 0;
+   core->last_decoded_repeat_pict = 0;
 }
 
 static bool allocate_frame_queue(struct deevee_core *core)
@@ -279,6 +628,8 @@ static void clear_menu_video(struct deevee_core *core)
    core->audio_chunk_capacity = 0;
    core->next_audio_chunk = 0;
    core->audio_payload_packets = 0;
+   core->active_audio_stream = 0;
+   core->has_active_audio_stream = false;
    core->subpicture_payloads = NULL;
    core->subpicture_payload_size = 0;
    core->subpicture_payload_capacity = 0;
@@ -298,6 +649,7 @@ static void clear_menu_video(struct deevee_core *core)
    core->has_active_subpicture_stream = false;
    core->subpicture_frame_ready = false;
    core->subpicture_decode_errors = 0;
+   reset_track_inventory(core);
    core->active_button_color_table = 0;
    core->has_active_button_color_table = false;
    memset(core->subpicture_clut, 0, sizeof(core->subpicture_clut));
@@ -336,19 +688,37 @@ static void clear_menu_video(struct deevee_core *core)
    core->menu_at_end = false;
    core->menu_loop_enabled = false;
    core->playback_is_title = false;
+   core->playback_paused = false;
    core->menu_last_frame_has_pts = false;
    core->menu_last_frame_pts = 0;
    core->menu_previous_frame_has_pts = false;
    core->menu_previous_frame_pts = 0;
    deevee_dvdnav_close(&core->dvdnav);
    core->dvdnav_active = false;
+   core->dvdnav_has_position = false;
+   core->dvdnav_title = 0;
+   core->dvdnav_part = 0;
+   core->dvdnav_parts = 0;
+   core->dvdnav_time_ticks = -1;
    reset_frame_queue(core);
 }
 
 static void clear_stream_buffers_keep_dvdnav(struct deevee_core *core)
 {
+   bool audio_stream_forced;
+   int forced_audio_physical_stream;
+   bool subpicture_stream_forced;
+   int forced_subpicture_physical_stream;
+   bool subpicture_visible;
+
    if (!core)
       return;
+
+   audio_stream_forced = core->audio_stream_forced;
+   forced_audio_physical_stream = core->forced_audio_physical_stream;
+   subpicture_stream_forced = core->subpicture_stream_forced;
+   forced_subpicture_physical_stream = core->forced_subpicture_physical_stream;
+   subpicture_visible = core->subpicture_visible;
 
    deevee_decoder_deinit(&core->decoder);
    free(core->menu_video_payloads);
@@ -375,6 +745,8 @@ static void clear_stream_buffers_keep_dvdnav(struct deevee_core *core)
    core->audio_chunk_capacity = 0;
    core->next_audio_chunk = 0;
    core->audio_payload_packets = 0;
+   core->active_audio_stream = 0;
+   core->has_active_audio_stream = false;
    core->subpicture_payloads = NULL;
    core->subpicture_payload_size = 0;
    core->subpicture_payload_capacity = 0;
@@ -394,6 +766,33 @@ static void clear_stream_buffers_keep_dvdnav(struct deevee_core *core)
    core->has_active_subpicture_stream = false;
    core->subpicture_frame_ready = false;
    core->subpicture_decode_errors = 0;
+   reset_track_inventory(core);
+   core->subpicture_visible = subpicture_visible;
+   if (audio_stream_forced && forced_audio_physical_stream >= 0 &&
+         forced_audio_physical_stream < (int)DEEVEE_MAX_AUDIO_STREAMS)
+   {
+      core->audio_stream_forced = true;
+      core->forced_audio_physical_stream = forced_audio_physical_stream;
+      core->active_audio_physical_stream = forced_audio_physical_stream;
+      core->active_audio_logical_stream = forced_audio_physical_stream;
+      core->active_audio_stream =
+         (uint8_t)(0x80u + (unsigned)forced_audio_physical_stream);
+      core->has_active_audio_stream = true;
+   }
+   if (subpicture_stream_forced && forced_subpicture_physical_stream >= 0 &&
+         forced_subpicture_physical_stream < (int)DEEVEE_MAX_SUBTITLE_STREAMS)
+   {
+      core->subpicture_stream_forced = true;
+      core->forced_subpicture_physical_stream =
+         forced_subpicture_physical_stream;
+      core->active_subpicture_physical_stream =
+         forced_subpicture_physical_stream;
+      core->active_subpicture_logical_stream =
+         forced_subpicture_physical_stream;
+      core->active_subpicture_stream =
+         (uint8_t)(0x20u + (unsigned)forced_subpicture_physical_stream);
+      core->has_active_subpicture_stream = true;
+   }
    core->active_button_color_table = 0;
    core->has_active_button_color_table = false;
    memset(core->subpicture_clut, 0, sizeof(core->subpicture_clut));
@@ -413,11 +812,13 @@ static void clear_stream_buffers_keep_dvdnav(struct deevee_core *core)
    memset(core->menu_buttons, 0, sizeof(core->menu_buttons));
    core->menu_at_end = false;
    core->menu_loop_enabled = false;
+   core->playback_paused = false;
    core->menu_last_frame_has_pts = false;
    core->menu_last_frame_pts = 0;
    core->menu_previous_frame_has_pts = false;
    core->menu_previous_frame_pts = 0;
    core->display_frame_ticks_remaining = 0;
+   core->display_frame_tick_remainder = 0;
    reset_frame_queue(core);
 }
 
@@ -564,7 +965,100 @@ static bool append_ac3_packet(struct deevee_core *core,
    if (payload[0] < 0x80 || payload[0] > 0x87)
       return true;
 
+   if (core->has_active_audio_stream &&
+         payload[0] != core->active_audio_stream)
+      return true;
+
+   if (!core->has_active_audio_stream)
+   {
+      core->active_audio_stream = payload[0];
+      core->has_active_audio_stream = true;
+   }
+
    return append_audio_payload(core, payload + 4u, packet->payload_size - 4u);
+}
+
+static void reset_audio_stream_buffers(struct deevee_core *core)
+{
+   if (!core)
+      return;
+
+   core->audio_payload_size = 0;
+   core->audio_chunk_count = 0;
+   core->next_audio_chunk = 0;
+   core->audio_payload_packets = 0;
+   deevee_audio_deinit(&core->audio);
+   deevee_audio_init(&core->audio);
+}
+
+static void reset_subpicture_stream_buffers(struct deevee_core *core)
+{
+   if (!core)
+      return;
+
+   core->subpicture_payload_size = 0;
+   core->subpicture_chunk_count = 0;
+   core->next_subpicture_chunk = 0;
+   core->subpicture_payload_packets = 0;
+   core->subpicture_assembly_size = 0;
+   core->subpicture_assembly_expected_size = 0;
+   core->subpicture_assembly_has_pts = false;
+   core->subpicture_assembly_pts = 0;
+   core->subpicture_frame_ready = false;
+   deevee_subpicture_frame_clear(&core->subpicture_frame);
+   deevee_subpicture_deinit(&core->subpicture);
+   deevee_subpicture_init(&core->subpicture);
+}
+
+static void apply_audio_stream_change(struct deevee_core *core, int physical,
+      int logical)
+{
+   int packet_stream;
+   uint8_t stream_id;
+   bool changed;
+
+   if (!core || core->audio_stream_forced)
+      return;
+
+   packet_stream = logical >= 0 && logical < (int)DEEVEE_MAX_AUDIO_STREAMS ?
+      logical : physical;
+   if (packet_stream < 0 || packet_stream >= (int)DEEVEE_MAX_AUDIO_STREAMS)
+      return;
+
+   stream_id = (uint8_t)(0x80u + (unsigned)packet_stream);
+   changed = core->has_active_audio_stream &&
+      core->active_audio_stream != stream_id;
+   core->active_audio_physical_stream = packet_stream;
+   core->active_audio_logical_stream = logical;
+   core->active_audio_stream = stream_id;
+   core->has_active_audio_stream = true;
+   if (changed)
+      reset_audio_stream_buffers(core);
+   core->track_options_dirty = true;
+}
+
+static void apply_subpicture_stream_change(struct deevee_core *core,
+      int physical, int logical)
+{
+   uint8_t stream_id;
+   bool changed;
+
+   if (!core || physical < 0 ||
+         physical >= (int)DEEVEE_MAX_SUBTITLE_STREAMS ||
+         core->subpicture_stream_forced)
+      return;
+
+   stream_id = (uint8_t)(0x20u + (unsigned)physical);
+   changed = core->has_active_subpicture_stream &&
+      core->active_subpicture_stream != stream_id;
+   core->active_subpicture_physical_stream = physical;
+   core->active_subpicture_logical_stream = logical;
+   core->active_subpicture_stream = stream_id;
+   core->has_active_subpicture_stream = true;
+   core->subpicture_visible = true;
+   if (changed)
+      reset_subpicture_stream_buffers(core);
+   core->track_options_dirty = true;
 }
 
 static bool append_subpicture_payload(struct deevee_core *core,
@@ -639,6 +1133,9 @@ static bool append_subpicture_packet(struct deevee_core *core,
 
    payload = packet->payload;
    if (payload[0] < 0x20 || payload[0] > 0x3f)
+      return true;
+
+   if (!core->subpicture_visible && core->playback_is_title)
       return true;
 
    if (core->has_active_subpicture_stream &&
@@ -737,6 +1234,7 @@ static bool reset_menu_decoder_position(struct deevee_core *core)
    core->menu_previous_frame_pts = 0;
    core->video_frame_duration_ticks =
       frame_duration_ticks_from_frame_rate_code(core->video_frame_rate_code);
+   core->display_frame_tick_remainder = 0;
    return true;
 }
 
@@ -805,6 +1303,19 @@ static void format_command_status(struct deevee_core *core,
          "%s:%02x%02x%02x%02x%02x%02x%02x%02x", prefix,
          command[0], command[1], command[2], command[3],
          command[4], command[5], command[6], command[7]);
+}
+
+static void format_dvdnav_control_status(struct deevee_core *core,
+      const char *control, bool searched, int before_title, int before_part,
+      int after_title, int after_part)
+{
+   if (!core)
+      return;
+
+   snprintf(core->menu_command_status, sizeof(core->menu_command_status),
+         "dvdnav:%s:%s:t%d/p%d->t%d/p%d",
+         control ? control : "control", searched ? "ok" : "failed",
+         before_title, before_part, after_title, after_part);
 }
 
 static bool is_link_tail_pgc_command(const uint8_t command[8])
@@ -1067,6 +1578,7 @@ static void update_menu_button_selection(struct deevee_core *core)
    if (!core)
       return;
 
+   update_dvdnav_position(core);
    if (core->dvdnav_active)
       sync_dvdnav_buttons(core);
 
@@ -1101,17 +1613,44 @@ static void update_menu_button_selection(struct deevee_core *core)
          absorb_current_nav_input(core);
       return;
    }
+   if (pressed & ((uint32_t)1u << DEEVEE_NAV_PLAY_PAUSE))
+   {
+      core->playback_paused = !core->playback_paused;
+      if (core->playback_paused)
+         deevee_audio_reset(&core->audio);
+      snprintf(core->menu_command_status, sizeof(core->menu_command_status),
+            "transport:%s", core->playback_paused ? "paused" : "playing");
+      return;
+   }
+   if (pressed & ((uint32_t)1u << DEEVEE_NAV_STOP))
+   {
+      core->playback_paused = !core->playback_paused;
+      if (core->playback_paused)
+         deevee_audio_reset(&core->audio);
+      snprintf(core->menu_command_status, sizeof(core->menu_command_status),
+            "transport:%s", core->playback_paused ? "paused" : "playing");
+      return;
+   }
    if (pressed & ((uint32_t)1u << DEEVEE_NAV_PREVIOUS_CHAPTER))
    {
       if (core->dvdnav_active)
       {
+         int before_title = core->dvdnav_title;
+         int before_part = core->dvdnav_part;
+         int after_title;
+         int after_part;
          bool searched = deevee_dvdnav_previous_chapter(&core->dvdnav);
 
-         snprintf(core->menu_command_status,
-               sizeof(core->menu_command_status), "dvdnav:prev:%s",
-               searched ? "ok" : "failed");
          if (searched)
+         {
+            core->playback_paused = false;
             (void)reset_dvdnav_decode_after_control(core);
+         }
+         update_dvdnav_position(core);
+         after_title = core->dvdnav_title;
+         after_part = core->dvdnav_part;
+         format_dvdnav_control_status(core, "prev", searched,
+               before_title, before_part, after_title, after_part);
       }
       return;
    }
@@ -1119,13 +1658,68 @@ static void update_menu_button_selection(struct deevee_core *core)
    {
       if (core->dvdnav_active)
       {
+         int before_title = core->dvdnav_title;
+         int before_part = core->dvdnav_part;
+         int after_title;
+         int after_part;
          bool searched = deevee_dvdnav_next_chapter(&core->dvdnav);
 
-         snprintf(core->menu_command_status,
-               sizeof(core->menu_command_status), "dvdnav:next:%s",
-               searched ? "ok" : "failed");
          if (searched)
+         {
+            core->playback_paused = false;
             (void)reset_dvdnav_decode_after_control(core);
+         }
+         update_dvdnav_position(core);
+         after_title = core->dvdnav_title;
+         after_part = core->dvdnav_part;
+         format_dvdnav_control_status(core, "next", searched,
+               before_title, before_part, after_title, after_part);
+      }
+      return;
+   }
+   if (pressed & ((uint32_t)1u << DEEVEE_NAV_REWIND))
+   {
+      if (core->dvdnav_active)
+      {
+         int before_title = core->dvdnav_title;
+         int before_part = core->dvdnav_part;
+         int after_title;
+         int after_part;
+         bool searched = deevee_dvdnav_scan_seconds(&core->dvdnav, -10);
+
+         if (searched)
+         {
+            core->playback_paused = false;
+            (void)reset_dvdnav_decode_after_control(core);
+         }
+         update_dvdnav_position(core);
+         after_title = core->dvdnav_title;
+         after_part = core->dvdnav_part;
+         format_dvdnav_control_status(core, "rewind", searched,
+               before_title, before_part, after_title, after_part);
+      }
+      return;
+   }
+   if (pressed & ((uint32_t)1u << DEEVEE_NAV_FAST_FORWARD))
+   {
+      if (core->dvdnav_active)
+      {
+         int before_title = core->dvdnav_title;
+         int before_part = core->dvdnav_part;
+         int after_title;
+         int after_part;
+         bool searched = deevee_dvdnav_scan_seconds(&core->dvdnav, 10);
+
+         if (searched)
+         {
+            core->playback_paused = false;
+            (void)reset_dvdnav_decode_after_control(core);
+         }
+         update_dvdnav_position(core);
+         after_title = core->dvdnav_title;
+         after_part = core->dvdnav_part;
+         format_dvdnav_control_status(core, "fast_forward", searched,
+               before_title, before_part, after_title, after_part);
       }
       return;
    }
@@ -1169,19 +1763,8 @@ static void update_menu_button_selection(struct deevee_core *core)
 
       if (core->dvdnav_active)
       {
-         fallback_prepared = dispatch_menu_button_command(core,
-               button->command);
-         if (fallback_prepared)
-         {
-            core->menu_confirmed_button = 0;
-            snprintf(core->menu_command_status,
-                  sizeof(core->menu_command_status), "fallback:first");
-            return;
-         }
-      }
-
-      if (core->dvdnav_active)
-      {
+         int before_title = core->dvdnav_title;
+         int before_part = core->dvdnav_part;
          bool activated = deevee_dvdnav_activate_button(&core->dvdnav,
                core->menu_active_button);
          bool prepared = false;
@@ -1192,7 +1775,10 @@ static void update_menu_button_selection(struct deevee_core *core)
          if (prepared)
          {
             snprintf(core->menu_command_status,
-                  sizeof(core->menu_command_status), "dvdnav:activated");
+                  sizeof(core->menu_command_status),
+                  "dvdnav:activated:t%d/p%d->t%d/p%d",
+                  before_title, before_part, core->dvdnav_title,
+                  core->dvdnav_part);
             absorb_current_nav_input(core);
             return;
          }
@@ -1380,7 +1966,7 @@ static void enqueue_decoded_frame(struct deevee_video_decoder *decoder,
       core->queue_drops++;
    }
 
-   fallback_ticks = fallback_frame_duration_ticks(core);
+   fallback_ticks = frame_duration_with_repeat_pict(core, frame->repeat_pict);
    if (core->frame_queue_count)
    {
       struct deevee_decoded_video_frame *previous =
@@ -1389,12 +1975,17 @@ static void enqueue_decoded_frame(struct deevee_video_decoder *decoder,
 
       if (previous->valid && previous->has_pts && frame->has_pts &&
             frame->pts > previous->pts)
+      {
          previous->display_ticks = display_frame_duration_ticks(core,
                (uint64_t)(frame->pts - previous->pts));
+         core->last_decoded_frame_duration_ticks = previous->display_ticks;
+      }
       else if (previous->valid)
       {
-         previous->display_ticks = fallback_frame_duration_ticks(core);
+         previous->display_ticks = frame_duration_with_repeat_pict(core,
+               previous->repeat_pict);
          core->fallback_timing_frames++;
+         core->last_decoded_frame_duration_ticks = previous->display_ticks;
       }
    }
 
@@ -1407,9 +1998,13 @@ static void enqueue_decoded_frame(struct deevee_video_decoder *decoder,
    queued->has_pts = frame->has_pts;
    queued->pts = frame->pts;
    queued->display_ticks = fallback_ticks;
+   queued->repeat_pict = frame->repeat_pict;
    queued->width = frame->width;
    queued->height = frame->height;
    queued->pixel_format = frame->pixel_format;
+   if (!core->last_decoded_frame_duration_ticks)
+      core->last_decoded_frame_duration_ticks = fallback_ticks;
+   core->last_decoded_repeat_pict = frame->repeat_pict;
 
    if (!frame->has_pts)
       core->fallback_timing_frames++;
@@ -1444,7 +2039,7 @@ static bool display_next_queued_frame(struct deevee_core *core)
    core->menu_last_frame_has_pts = queued->has_pts;
    core->menu_last_frame_pts = queued->pts;
    core->display_frame_ticks_remaining =
-      display_hold_ticks_from_duration(queued->display_ticks);
+      display_hold_ticks_from_duration(core, queued->display_ticks);
    core->displayed_frames++;
 
    if (queued->has_pts)
@@ -1668,61 +2263,109 @@ static uint32_t blend_xrgb8888(uint32_t dst, uint32_t src)
       ((uint32_t)clamp_u8(g) << 8) | clamp_u8(b);
 }
 
+struct deevee_display_transform
+{
+   int x_offset;
+   int y_offset;
+   int x_num;
+   int x_den;
+   int y_num;
+   int y_den;
+};
+
+static struct deevee_display_transform deevee_display_transform_for_core(
+      const struct deevee_core *core)
+{
+   struct deevee_display_transform transform;
+
+   transform.x_offset = 0;
+   transform.y_offset = 0;
+   transform.x_num = 1;
+   transform.x_den = 1;
+   transform.y_num = 1;
+   transform.y_den = 1;
+
+   (void)core;
+
+   return transform;
+}
+
+static int transform_coordinate(int value, int offset, int num, int den)
+{
+   if (!den)
+      return value;
+   return offset + ((value - offset) * num) / den;
+}
+
+static int transform_dvd_x(const struct deevee_display_transform *transform,
+      int x)
+{
+   return transform ? transform_coordinate(x, transform->x_offset,
+      transform->x_num, transform->x_den) : x;
+}
+
+static int transform_dvd_y(const struct deevee_display_transform *transform,
+      int y)
+{
+   return transform ? transform_coordinate(y, transform->y_offset,
+      transform->y_num, transform->y_den) : y;
+}
+
 static bool button_ranges_overlap(uint16_t start_a, uint16_t end_a,
       uint16_t start_b, uint16_t end_b)
 {
    return start_a <= end_b && start_b <= end_a;
 }
 
-static bool active_button_spu_clip(const struct deevee_core *core,
+static bool active_button_spu_region(const struct deevee_core *core,
       int *x0, int *y0, int *x1, int *y1)
 {
    const struct deevee_dvd_menu_button *button;
    unsigned button_index;
    int active_x_center;
    int active_y_center;
-   int button_width;
-   int horizontal_margin;
 
    if (!core || !x0 || !y0 || !x1 || !y1 || !core->menu_active_button ||
          core->menu_active_button > core->menu_button_count)
       return false;
 
+   if (core->has_active_highlight)
+   {
+      *x0 = (int)core->active_highlight_x_start;
+      *x1 = (int)core->active_highlight_x_end;
+      *y0 = (int)core->active_highlight_y_start;
+      *y1 = (int)core->active_highlight_y_end;
+      return *x1 >= *x0 && *y1 >= *y0;
+   }
+
    button = &core->menu_buttons[core->menu_active_button - 1u];
    active_x_center = ((int)button->x_start + (int)button->x_end) / 2;
    active_y_center = ((int)button->y_start + (int)button->y_end) / 2;
-   button_width = (int)button->x_end - (int)button->x_start + 1;
-   if (button_width < 1)
-      button_width = 1;
-   horizontal_margin = button_width / 3;
-   if (horizontal_margin < 24)
-      horizontal_margin = 24;
-   if (horizontal_margin > 160)
-      horizontal_margin = 160;
-   *x0 = (int)button->x_start - horizontal_margin;
-   *x1 = (int)button->x_end + horizontal_margin;
+   *x0 = 0;
+   *x1 = (int)DEEVEE_VIDEO_WIDTH - 1;
    *y0 = 0;
    *y1 = (int)DEEVEE_VIDEO_HEIGHT - 1;
+
    for (button_index = 0; button_index < core->menu_button_count;
          button_index++)
    {
       const struct deevee_dvd_menu_button *other =
          &core->menu_buttons[button_index];
-      int other_center;
+      int other_y_center;
 
       if (button_index + 1u == core->menu_active_button)
          continue;
 
-      other_center = ((int)other->y_start + (int)other->y_end) / 2;
-      if (other_center < active_y_center)
+      other_y_center = ((int)other->y_start + (int)other->y_end) / 2;
+      if (other_y_center < active_y_center)
       {
-         int boundary = (other_center + active_y_center) / 2;
+         int boundary = (other_y_center + active_y_center) / 2;
          if (boundary > *y0)
             *y0 = boundary;
       }
-      else if (other_center > active_y_center)
+      else if (other_y_center > active_y_center)
       {
-         int boundary = (other_center + active_y_center) / 2;
+         int boundary = (other_y_center + active_y_center) / 2;
          if (boundary < *y1)
             *y1 = boundary;
       }
@@ -1748,15 +2391,257 @@ static bool active_button_spu_clip(const struct deevee_core *core,
       }
    }
 
-   if (*x0 < 0)
-      *x0 = 0;
-   if (*x1 >= (int)DEEVEE_VIDEO_WIDTH)
-      *x1 = (int)DEEVEE_VIDEO_WIDTH - 1;
-   if (*y0 < 0)
-      *y0 = 0;
-   if (*y1 >= (int)DEEVEE_VIDEO_HEIGHT)
-      *y1 = (int)DEEVEE_VIDEO_HEIGHT - 1;
    return *x1 >= *x0 && *y1 >= *y0;
+}
+
+static bool dvd_pixel_in_region(int x, int y, int x0, int y0, int x1, int y1)
+{
+   return x >= x0 && x <= x1 && y >= y0 && y <= y1;
+}
+
+static bool subpicture_rect_pixel_is_present(
+      const struct deevee_subpicture_rect *rect, size_t index)
+{
+   if (!rect)
+      return false;
+   if (rect->indexes)
+      return rect->indexes[index] != 0;
+   return rect->pixels && (rect->pixels[index] >> 24) != 0;
+}
+
+static bool build_active_button_spu_component_mask(
+      const struct deevee_core *core,
+      const struct deevee_subpicture_rect *rect, uint8_t **out_mask,
+      int *out_x0, int *out_y0, int *out_x1, int *out_y1)
+{
+   int region_x0;
+   int region_y0;
+   int region_x1;
+   int region_y1;
+   size_t pixel_count;
+   uint8_t *mask;
+   uint8_t *visited;
+   size_t *queue;
+   size_t *component;
+   int y;
+   bool selected_any = false;
+
+   if (out_mask)
+      *out_mask = NULL;
+   if (out_x0)
+      *out_x0 = (int)DEEVEE_VIDEO_WIDTH - 1;
+   if (out_y0)
+      *out_y0 = (int)DEEVEE_VIDEO_HEIGHT - 1;
+   if (out_x1)
+      *out_x1 = 0;
+   if (out_y1)
+      *out_y1 = 0;
+   if (!core || !rect || !out_mask || rect->width <= 0 || rect->height <= 0)
+      return false;
+   if (!active_button_spu_region(core, &region_x0, &region_y0, &region_x1,
+            &region_y1))
+      return false;
+
+   pixel_count = (size_t)rect->width * (size_t)rect->height;
+   mask = (uint8_t *)calloc(pixel_count, sizeof(uint8_t));
+   if (!mask)
+      return false;
+
+   if (core->has_active_highlight)
+   {
+      for (y = 0; y < rect->height; y++)
+      {
+         int x;
+
+         for (x = 0; x < rect->width; x++)
+         {
+            size_t index = (size_t)y * (size_t)rect->width + (size_t)x;
+            int dvd_x = rect->x + x;
+            int dvd_y = rect->y + y;
+
+            if (!subpicture_rect_pixel_is_present(rect, index) ||
+                  !dvd_pixel_in_region(dvd_x, dvd_y, region_x0, region_y0,
+                     region_x1, region_y1))
+               continue;
+
+            mask[index] = 1;
+            if (out_x0 && dvd_x < *out_x0)
+               *out_x0 = dvd_x;
+            if (out_y0 && dvd_y < *out_y0)
+               *out_y0 = dvd_y;
+            if (out_x1 && dvd_x > *out_x1)
+               *out_x1 = dvd_x;
+            if (out_y1 && dvd_y > *out_y1)
+               *out_y1 = dvd_y;
+            selected_any = true;
+         }
+      }
+
+      if (!selected_any)
+      {
+         free(mask);
+         return false;
+      }
+
+      *out_mask = mask;
+      return true;
+   }
+
+   visited = (uint8_t *)calloc(pixel_count, sizeof(uint8_t));
+   queue = (size_t *)malloc(pixel_count * sizeof(size_t));
+   component = (size_t *)malloc(pixel_count * sizeof(size_t));
+   if (!visited || !queue || !component)
+   {
+      free(mask);
+      free(visited);
+      free(queue);
+      free(component);
+      return false;
+   }
+
+   for (y = 0; y < rect->height; y++)
+   {
+      int x;
+
+      for (x = 0; x < rect->width; x++)
+      {
+         size_t start = (size_t)y * (size_t)rect->width + (size_t)x;
+         size_t head = 0;
+         size_t tail = 0;
+         size_t component_count = 0;
+         int component_x0 = DEEVEE_VIDEO_WIDTH - 1;
+         int component_y0 = DEEVEE_VIDEO_HEIGHT - 1;
+         int component_x1 = 0;
+         int component_y1 = 0;
+         bool component_in_active_region = false;
+
+         if (visited[start] || !subpicture_rect_pixel_is_present(rect, start))
+            continue;
+
+         visited[start] = 1;
+         queue[tail++] = start;
+         while (head < tail)
+         {
+            size_t current = queue[head++];
+            int local_x = (int)(current % (size_t)rect->width);
+            int local_y = (int)(current / (size_t)rect->width);
+            int dvd_x = rect->x + local_x;
+            int dvd_y = rect->y + local_y;
+
+            component[component_count++] = current;
+            if (dvd_x < component_x0)
+               component_x0 = dvd_x;
+            if (dvd_y < component_y0)
+               component_y0 = dvd_y;
+            if (dvd_x > component_x1)
+               component_x1 = dvd_x;
+            if (dvd_y > component_y1)
+               component_y1 = dvd_y;
+
+            if (local_x > 0)
+            {
+               size_t neighbor = current - 1u;
+               if (!visited[neighbor] &&
+                     subpicture_rect_pixel_is_present(rect, neighbor))
+               {
+                  visited[neighbor] = 1;
+                  queue[tail++] = neighbor;
+               }
+            }
+            if (local_x + 1 < rect->width)
+            {
+               size_t neighbor = current + 1u;
+               if (!visited[neighbor] &&
+                     subpicture_rect_pixel_is_present(rect, neighbor))
+               {
+                  visited[neighbor] = 1;
+                  queue[tail++] = neighbor;
+               }
+            }
+            if (local_y > 0)
+            {
+               size_t neighbor = current - (size_t)rect->width;
+               if (!visited[neighbor] &&
+                     subpicture_rect_pixel_is_present(rect, neighbor))
+               {
+                  visited[neighbor] = 1;
+                  queue[tail++] = neighbor;
+               }
+            }
+            if (local_y + 1 < rect->height)
+            {
+               size_t neighbor = current + (size_t)rect->width;
+               if (!visited[neighbor] &&
+                     subpicture_rect_pixel_is_present(rect, neighbor))
+               {
+                  visited[neighbor] = 1;
+                  queue[tail++] = neighbor;
+               }
+            }
+         }
+
+         component_in_active_region = dvd_pixel_in_region(
+               (component_x0 + component_x1) / 2,
+               (component_y0 + component_y1) / 2,
+               region_x0, region_y0, region_x1, region_y1);
+
+         if (component_in_active_region)
+         {
+            size_t i;
+
+            for (i = 0; i < component_count; i++)
+            {
+               int local_x = (int)(component[i] % (size_t)rect->width);
+               int local_y = (int)(component[i] / (size_t)rect->width);
+               int dvd_x = rect->x + local_x;
+               int dvd_y = rect->y + local_y;
+
+               mask[component[i]] = 1;
+               if (out_x0 && dvd_x < *out_x0)
+                  *out_x0 = dvd_x;
+               if (out_y0 && dvd_y < *out_y0)
+                  *out_y0 = dvd_y;
+               if (out_x1 && dvd_x > *out_x1)
+                  *out_x1 = dvd_x;
+               if (out_y1 && dvd_y > *out_y1)
+                  *out_y1 = dvd_y;
+            }
+            selected_any = true;
+         }
+      }
+   }
+
+   free(visited);
+   free(queue);
+   free(component);
+
+   if (!selected_any)
+   {
+      free(mask);
+      return false;
+   }
+
+   *out_mask = mask;
+   return true;
+}
+
+static int transform_spu_region_x_for_active_button(
+      const struct deevee_core *core, int mask_x0, int x)
+{
+   const struct deevee_dvd_menu_button *button;
+
+   if (core && core->has_active_highlight)
+      return x;
+
+   if (!core || !core->menu_active_button ||
+         core->menu_active_button > core->menu_button_count)
+      return x;
+
+   button = &core->menu_buttons[core->menu_active_button - 1u];
+   if (mask_x0 >= (int)button->x_start - 12)
+      return x;
+
+   return (int)button->x_start + 8 + ((x - mask_x0) * 3) / 4;
 }
 
 static uint32_t dvd_clut_ycrcb_to_argb(uint32_t clut, uint8_t alpha)
@@ -1782,17 +2667,23 @@ static uint32_t subpicture_highlight_pixel(const struct deevee_core *core,
    if (!spu_index)
       return 0;
 
-   if (!core || !core->has_subpicture_clut ||
-         !core->has_select_color_table || !core->has_active_button_color_table)
+   if (!core || !core->has_subpicture_clut)
       return decoded_pixel;
 
-   table_index = core->active_button_color_table;
-   if (table_index)
-      table_index--;
-   if (table_index >= 3u)
-      table_index = 0;
+   if (core->has_active_highlight)
+      color_entry = core->active_highlight_palette;
+   else
+   {
+      if (!core->has_select_color_table || !core->has_active_button_color_table)
+         return decoded_pixel;
 
-   color_entry = core->select_color_table[table_index];
+      table_index = core->active_button_color_table;
+      if (table_index)
+         table_index--;
+      if (table_index >= 3u)
+         table_index = 0;
+      color_entry = core->select_color_table[table_index];
+   }
    clut_index = (uint8_t)((color_entry >> (16u + (unsigned)spu_index * 4u)) &
          0x0fu);
    alpha = (uint8_t)(((color_entry >> ((unsigned)spu_index * 4u)) & 0x0fu) *
@@ -1803,22 +2694,9 @@ static uint32_t subpicture_highlight_pixel(const struct deevee_core *core,
    return dvd_clut_ycrcb_to_argb(core->subpicture_clut[clut_index], alpha);
 }
 
-static int scale_subpicture_x_for_display(const struct deevee_core *core,
-      int x)
-{
-   int center = (int)DEEVEE_VIDEO_WIDTH / 2;
-
-   if (core && core->video_aspect_ratio_code == 2u)
-      return center + ((x - center) * 8) / 9;
-   return x;
-}
-
 static bool composite_subpicture_highlight(struct deevee_core *core)
 {
-   int clip_x0;
-   int clip_y0;
-   int clip_x1;
-   int clip_y1;
+   struct deevee_display_transform transform;
    unsigned rect_index;
    bool drew = false;
 
@@ -1827,14 +2705,94 @@ static bool composite_subpicture_highlight(struct deevee_core *core)
 
    decode_available_subpictures(core);
    if (!core->subpicture_frame_ready || !core->subpicture_frame.valid ||
-         !core->subpicture_frame.rect_count ||
-         !active_button_spu_clip(core, &clip_x0, &clip_y0, &clip_x1, &clip_y1))
+         !core->subpicture_frame.rect_count)
       return false;
 
+   transform = deevee_display_transform_for_core(core);
    if (core->menu_base_pixels && core->menu_base_pixels_valid)
       memcpy(core->video.pixels, core->menu_base_pixels,
             DEEVEE_VIDEO_WIDTH * DEEVEE_VIDEO_HEIGHT * sizeof(uint32_t));
 
+   for (rect_index = 0; rect_index < core->subpicture_frame.rect_count;
+         rect_index++)
+   {
+      const struct deevee_subpicture_rect *rect =
+         &core->subpicture_frame.rects[rect_index];
+      uint8_t *active_mask = NULL;
+      int mask_x0 = 0;
+      int mask_y0 = 0;
+      int mask_x1 = 0;
+      int mask_y1 = 0;
+      int y;
+
+      if (!rect->pixels || rect->width <= 0 || rect->height <= 0)
+         continue;
+      if (!build_active_button_spu_component_mask(core, rect, &active_mask,
+               &mask_x0, &mask_y0, &mask_x1, &mask_y1))
+         continue;
+
+      for (y = 0; y < rect->height; y++)
+      {
+         int src_y = rect->y + y;
+         int dst_y;
+         int x;
+
+         if (src_y < 0 || src_y >= (int)DEEVEE_VIDEO_HEIGHT)
+            continue;
+
+         for (x = 0; x < rect->width; x++)
+         {
+            int src_x = rect->x + x;
+            int dst_x;
+            uint32_t src;
+            size_t dst_index;
+            uint8_t spu_index = rect->indexes ?
+               rect->indexes[(size_t)y * (size_t)rect->width + (size_t)x] : 0;
+
+            if (src_x < 0 || src_x >= (int)DEEVEE_VIDEO_WIDTH ||
+                  !active_mask[(size_t)y * (size_t)rect->width + (size_t)x])
+               continue;
+
+            src = rect->pixels[(size_t)y * (size_t)rect->width + (size_t)x];
+            src = subpicture_highlight_pixel(core, spu_index, src);
+            if (!(src >> 24))
+               continue;
+
+            dst_x = transform_spu_region_x_for_active_button(core, mask_x0,
+                  transform_dvd_x(&transform, src_x));
+            dst_y = transform_dvd_y(&transform, src_y);
+            if (dst_x < 0 || dst_x >= (int)DEEVEE_VIDEO_WIDTH ||
+                  dst_y < 0 || dst_y >= (int)DEEVEE_VIDEO_HEIGHT)
+               continue;
+
+            dst_index = (size_t)dst_y * DEEVEE_VIDEO_WIDTH + (size_t)dst_x;
+            core->video.pixels[dst_index] =
+               blend_xrgb8888(core->video.pixels[dst_index], src);
+            drew = true;
+         }
+      }
+      free(active_mask);
+   }
+
+   return drew;
+}
+
+static bool composite_subpicture_overlay(struct deevee_core *core)
+{
+   struct deevee_display_transform transform;
+   unsigned rect_index;
+   bool drew = false;
+
+   if (!core || !core->video.pixels || !core->playback_is_title ||
+         !core->subpicture_visible)
+      return false;
+
+   decode_available_subpictures(core);
+   if (!core->subpicture_frame_ready || !core->subpicture_frame.valid ||
+         !core->subpicture_frame.rect_count)
+      return false;
+
+   transform = deevee_display_transform_for_core(core);
    for (rect_index = 0; rect_index < core->subpicture_frame.rect_count;
          rect_index++)
    {
@@ -1847,11 +2805,15 @@ static bool composite_subpicture_highlight(struct deevee_core *core)
 
       for (y = 0; y < rect->height; y++)
       {
-         int dst_y = rect->y + y;
+         int src_y = rect->y + y;
+         int dst_y;
          int x;
 
-         if (dst_y < clip_y0 || dst_y > clip_y1 ||
-               dst_y < 0 || dst_y >= (int)DEEVEE_VIDEO_HEIGHT)
+         if (src_y < 0 || src_y >= (int)DEEVEE_VIDEO_HEIGHT)
+            continue;
+
+         dst_y = transform_dvd_y(&transform, src_y);
+         if (dst_y < 0 || dst_y >= (int)DEEVEE_VIDEO_HEIGHT)
             continue;
 
          for (x = 0; x < rect->width; x++)
@@ -1860,19 +2822,15 @@ static bool composite_subpicture_highlight(struct deevee_core *core)
             int dst_x;
             uint32_t src;
             size_t dst_index;
-            uint8_t spu_index = rect->indexes ?
-               rect->indexes[(size_t)y * (size_t)rect->width + (size_t)x] : 0;
 
-            if (src_x < clip_x0 || src_x > clip_x1 ||
-                  src_x < 0 || src_x >= (int)DEEVEE_VIDEO_WIDTH)
+            if (src_x < 0 || src_x >= (int)DEEVEE_VIDEO_WIDTH)
                continue;
 
             src = rect->pixels[(size_t)y * (size_t)rect->width + (size_t)x];
-            src = subpicture_highlight_pixel(core, spu_index, src);
             if (!(src >> 24))
                continue;
 
-            dst_x = scale_subpicture_x_for_display(core, src_x);
+            dst_x = transform_dvd_x(&transform, src_x);
             if (dst_x < 0 || dst_x >= (int)DEEVEE_VIDEO_WIDTH)
                continue;
 
@@ -1891,12 +2849,20 @@ static void sync_dvdnav_buttons(struct deevee_core *core)
 {
    uint8_t button_count = 0;
    uint8_t active_button = 0;
+   uint32_t select_color_table[3];
+   uint32_t subpicture_clut[16];
+   bool has_select_color_table = false;
+   bool has_subpicture_clut = false;
+   struct deevee_dvdnav_highlight highlight;
 
    if (!core || !core->dvdnav_active)
       return;
 
+   update_dvdnav_position(core);
+   core->has_active_highlight = false;
    if (deevee_dvdnav_read_buttons(&core->dvdnav, core->menu_buttons,
-            &button_count, &active_button))
+            &button_count, &active_button, select_color_table,
+            &has_select_color_table, subpicture_clut, &has_subpicture_clut))
    {
       core->menu_button_count = button_count;
       core->menu_active_button = active_button;
@@ -1908,21 +2874,48 @@ static void sync_dvdnav_buttons(struct deevee_core *core)
             core->menu_buttons[core->menu_active_button - 1u].color_table;
          core->has_active_button_color_table = true;
       }
+      if (has_select_color_table)
+      {
+         memcpy(core->select_color_table, select_color_table,
+               sizeof(core->select_color_table));
+         core->has_select_color_table = true;
+      }
+      if (has_subpicture_clut)
+      {
+         memcpy(core->subpicture_clut, subpicture_clut,
+               sizeof(core->subpicture_clut));
+         core->has_subpicture_clut = true;
+      }
+      if (deevee_dvdnav_read_highlight(&core->dvdnav, &highlight, false))
+      {
+         core->active_highlight_x_start = highlight.x_start;
+         core->active_highlight_x_end = highlight.x_end;
+         core->active_highlight_y_start = highlight.y_start;
+         core->active_highlight_y_end = highlight.y_end;
+         core->active_highlight_palette = highlight.palette;
+         core->has_active_highlight = true;
+      }
    }
 }
 
 static bool append_dvdnav_events(struct deevee_core *core,
-      unsigned max_events, size_t min_new_video_chunks)
+      unsigned max_events, size_t min_new_video_chunks,
+      size_t min_new_audio_chunks)
 {
-   size_t start_chunks;
+   size_t start_video_chunks;
+   size_t start_audio_chunks;
    unsigned i;
 
    if (!core || !core->dvdnav_active)
       return false;
 
-   start_chunks = core->menu_video_chunk_count;
+   start_video_chunks = core->menu_video_chunk_count;
+   start_audio_chunks = core->audio_chunk_count;
    for (i = 0; i < max_events &&
-         core->menu_video_chunk_count < start_chunks + min_new_video_chunks; i++)
+         (core->menu_video_chunk_count <
+             start_video_chunks + min_new_video_chunks ||
+          core->audio_chunk_count <
+             start_audio_chunks + min_new_audio_chunks); i++)
    {
       struct deevee_dvdnav_event event;
       enum deevee_dvdnav_status status;
@@ -1930,7 +2923,8 @@ static bool append_dvdnav_events(struct deevee_core *core,
 
       status = deevee_dvdnav_next(&core->dvdnav, &event);
       if (status != DEEVEE_DVDNAV_OK)
-         return core->menu_video_chunk_count > start_chunks;
+         return core->menu_video_chunk_count > start_video_chunks ||
+            core->audio_chunk_count > start_audio_chunks;
 
       name = deevee_dvdnav_event_name(event.event);
       if (strcmp(name, "block") == 0 || strcmp(name, "nav") == 0)
@@ -1947,10 +2941,30 @@ static bool append_dvdnav_events(struct deevee_core *core,
       else if (strcmp(name, "stop") == 0)
       {
          core->dvdnav_active = false;
-         return core->menu_video_chunk_count > start_chunks;
+         update_dvdnav_position(core);
+         return core->menu_video_chunk_count > start_video_chunks ||
+            core->audio_chunk_count > start_audio_chunks;
       }
       else if (strcmp(name, "highlight") == 0)
          sync_dvdnav_buttons(core);
+      else if (strcmp(name, "audio_stream") == 0)
+      {
+         struct deevee_dvdnav_audio_stream_change change;
+         if (deevee_dvdnav_read_audio_stream_change(&event, &change))
+            apply_audio_stream_change(core, change.physical, change.logical);
+      }
+      else if (strcmp(name, "spu_stream") == 0)
+      {
+         struct deevee_dvdnav_spu_stream_change change;
+         if (deevee_dvdnav_read_spu_stream_change(&event, &change))
+         {
+            int physical = change.physical_wide >= 0 ?
+               change.physical_wide : change.physical_letterbox;
+            if (physical < 0)
+               physical = change.physical_pan_scan;
+            apply_subpicture_stream_change(core, physical, change.logical);
+         }
+      }
 
       if (strcmp(name, "nav") == 0)
          sync_dvdnav_buttons(core);
@@ -1958,7 +2972,8 @@ static bool append_dvdnav_events(struct deevee_core *core,
       (void)deevee_dvdnav_ack_event(&core->dvdnav, event.event);
    }
 
-   return core->menu_video_chunk_count > start_chunks;
+   return core->menu_video_chunk_count > start_video_chunks ||
+      core->audio_chunk_count > start_audio_chunks;
 }
 
 static bool reset_dvdnav_decode_after_control(struct deevee_core *core)
@@ -1967,7 +2982,16 @@ static bool reset_dvdnav_decode_after_control(struct deevee_core *core)
       return false;
 
    clear_stream_buffers_keep_dvdnav(core);
-   if (!append_dvdnav_events(core, 32768u, 2048u) ||
+   if (core->audio_stream_forced && core->forced_audio_physical_stream >= 0)
+      (void)deevee_dvdnav_set_active_stream(&core->dvdnav, true,
+            core->forced_audio_physical_stream);
+   if (core->subpicture_stream_forced &&
+         core->forced_subpicture_physical_stream >= 0)
+      (void)deevee_dvdnav_set_active_stream(&core->dvdnav, false,
+            core->forced_subpicture_physical_stream);
+   (void)deevee_dvdnav_set_spu_visible(&core->dvdnav,
+         core->subpicture_visible);
+   if (!append_dvdnav_events(core, 32768u, 2048u, 0u) ||
          !core->menu_video_chunk_count)
       return false;
 
@@ -1977,7 +3001,42 @@ static bool reset_dvdnav_decode_after_control(struct deevee_core *core)
 
    core->next_menu_video_chunk = 0;
    core->menu_playback_active = true;
+   core->playback_paused = false;
+   update_dvdnav_position(core);
    return true;
+}
+
+static bool prepare_dvdnav_title_playback(struct deevee_core *core,
+      unsigned title_number, unsigned part_number)
+{
+   enum deevee_dvdnav_status status;
+   bool opened_here = false;
+
+   if (!core || !title_number || !deevee_dvdnav_available() ||
+         !content_is_disc_image(&core->content))
+      return false;
+
+   if (!core->dvdnav_active)
+   {
+      status = deevee_dvdnav_open(&core->dvdnav, &core->content);
+      if (status != DEEVEE_DVDNAV_OK)
+         return false;
+      core->dvdnav_active = true;
+      opened_here = true;
+   }
+
+   if (deevee_dvdnav_play_title_part(&core->dvdnav, (int)title_number,
+            (int)(part_number ? part_number : 1)) &&
+         reset_dvdnav_decode_after_control(core))
+      return true;
+
+   if (opened_here)
+   {
+      deevee_dvdnav_close(&core->dvdnav);
+      core->dvdnav_active = false;
+      update_dvdnav_position(core);
+   }
+   return false;
 }
 
 static bool open_menu_decoder(struct deevee_core *core)
@@ -2223,6 +3282,21 @@ static bool prepare_title_playback_from_target(struct deevee_core *core,
          !content_is_disc_image(&core->content))
       return false;
 
+   if (target->title_number &&
+         prepare_dvdnav_title_playback(core, target->title_number,
+            target->ptt_number ? target->ptt_number : 1))
+   {
+      core->playback_is_title = true;
+      core->menu_current_vts = target->vts_number;
+      core->menu_domain = DEEVEE_DVD_MENU_DOMAIN_NONE;
+      snprintf(core->menu_playback_source, sizeof(core->menu_playback_source),
+            "DVDNAV_TITLE_%02u_PART_%02u", target->title_number,
+            target->ptt_number ? target->ptt_number : 1);
+      core->menu_playback_source[sizeof(core->menu_playback_source) - 1] =
+         '\0';
+      return true;
+   }
+
    deevee_disc_init(&disc);
    if (deevee_disc_open(&disc, &core->content) != DEEVEE_DISC_OK)
       return false;
@@ -2330,7 +3404,7 @@ static bool prepare_dvdnav_playback(struct deevee_core *core,
 
    core->dvdnav_active = true;
    (void)deevee_dvdnav_menu_call_root(&core->dvdnav);
-   if (!append_dvdnav_events(core, 4096u, 512u) ||
+   if (!append_dvdnav_events(core, 4096u, 512u, 0u) ||
          !core->menu_video_chunk_count)
    {
       clear_menu_video(core);
@@ -2350,6 +3424,7 @@ static bool prepare_dvdnav_playback(struct deevee_core *core,
    core->menu_domain = DEEVEE_DVD_MENU_DOMAIN_NONE;
    snprintf(core->menu_playback_source, sizeof(core->menu_playback_source),
          "DVDNAV");
+   update_dvdnav_position(core);
    return true;
 }
 
@@ -2421,7 +3496,7 @@ static bool fill_frame_queue(struct deevee_core *core, size_t target_count)
          uint32_t frames_before_flush = frame_probe.frames_decoded;
 
          if (core->dvdnav_active &&
-               append_dvdnav_events(core, 512u, target_count))
+               append_dvdnav_events(core, 512u, target_count, 0u))
             continue;
 
          (void)deevee_decoder_flush_mpeg2(&core->decoder, &frame_probe);
@@ -2502,9 +3577,22 @@ static void decode_audio_until_buffered(struct deevee_core *core,
 
       if (core->next_audio_chunk >= core->audio_chunk_count)
       {
-         deevee_audio_deinit(&core->audio);
-         deevee_audio_init(&core->audio);
-         core->next_audio_chunk = 0;
+         if (core->dvdnav_active)
+         {
+            size_t audio_chunks_before = core->audio_chunk_count;
+
+            if (!append_dvdnav_events(core, 512u, 0u, 1u) ||
+                  core->audio_chunk_count <= audio_chunks_before)
+               break;
+         }
+         else if (!core->playback_is_title && core->menu_loop_enabled)
+         {
+            deevee_audio_deinit(&core->audio);
+            deevee_audio_init(&core->audio);
+            core->next_audio_chunk = 0;
+         }
+         else
+            break;
       }
 
       chunk = &core->audio_chunks[core->next_audio_chunk++];
@@ -2613,10 +3701,13 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
       label = deevee_content_type_name(core->content.type);
 
    update_menu_button_selection(core);
+   update_dvdnav_position(core);
 
    if (core->menu_playback_active)
    {
-      if (core->display_frame_ticks_remaining)
+      if (core->playback_paused)
+         core->repeated_frames++;
+      else if (core->display_frame_ticks_remaining)
       {
          if (core->display_frame_ticks_remaining > DEEVEE_CLOCK_TICKS_PER_RUN)
             core->display_frame_ticks_remaining -= DEEVEE_CLOCK_TICKS_PER_RUN;
@@ -2636,7 +3727,9 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
    else
       deevee_video_render_placeholder(&core->video, core->frame_count, label);
 
-   drew_subpicture_highlight = composite_subpicture_highlight(core);
+   drew_subpicture_highlight = composite_subpicture_overlay(core);
+   if (!drew_subpicture_highlight)
+      drew_subpicture_highlight = composite_subpicture_highlight(core);
    if (!drew_subpicture_highlight && should_draw_menu_overlay(core))
       draw_menu_button_overlay(core);
 
@@ -2644,8 +3737,16 @@ void deevee_core_run(struct deevee_core *core, struct deevee_frame *video,
    video->width = DEEVEE_VIDEO_WIDTH;
    video->height = DEEVEE_VIDEO_HEIGHT;
    video->pitch = core->video.pitch;
-   decode_audio_until_buffered(core, DEEVEE_AUDIO_FRAMES_PER_RUN * 3u);
-   audio->samples = deevee_audio_read(&core->audio, &audio->frames);
+   if (core->playback_paused)
+   {
+      audio->samples = deevee_audio_silence(&core->audio, &audio->frames);
+      audio->frames = 0;
+   }
+   else
+   {
+      decode_audio_until_buffered(core, DEEVEE_AUDIO_FRAMES_PER_RUN * 3u);
+      audio->samples = deevee_audio_read(&core->audio, &audio->frames);
+   }
 
    core->frame_count++;
 }
@@ -2761,6 +3862,71 @@ unsigned deevee_core_audio_last_channels(const struct deevee_core *core)
    return core ? deevee_audio_last_channels(&core->audio) : 0;
 }
 
+unsigned deevee_core_active_audio_stream(const struct deevee_core *core)
+{
+   return core && core->has_active_audio_stream ? core->active_audio_stream : 0;
+}
+
+unsigned deevee_core_audio_stream_count(const struct deevee_core *core)
+{
+   return core ? core->audio_stream_count : 0;
+}
+
+int deevee_core_active_audio_logical_stream(const struct deevee_core *core)
+{
+   return core ? core->active_audio_logical_stream : -1;
+}
+
+int deevee_core_active_audio_physical_stream(const struct deevee_core *core)
+{
+   return core ? core->active_audio_physical_stream : -1;
+}
+
+const char *deevee_core_audio_stream_label(const struct deevee_core *core,
+      unsigned index)
+{
+   if (!core || index >= core->audio_stream_count ||
+         !core->audio_streams[index].label[0])
+      return "";
+
+   return core->audio_streams[index].label;
+}
+
+bool deevee_core_set_audio_track(struct deevee_core *core, int physical_stream)
+{
+   if (!core)
+      return false;
+
+   if (physical_stream < 0)
+   {
+      core->audio_stream_forced = false;
+      refresh_track_inventory(core);
+      return true;
+   }
+
+   if (physical_stream >= (int)DEEVEE_MAX_AUDIO_STREAMS)
+      return false;
+   if (!core->audio_stream_count ||
+         physical_stream >= (int)core->audio_stream_count)
+      return false;
+   if (core->audio_stream_forced &&
+         core->forced_audio_physical_stream == physical_stream)
+      return true;
+
+   core->audio_stream_forced = true;
+   core->forced_audio_physical_stream = physical_stream;
+   core->active_audio_physical_stream = physical_stream;
+   core->active_audio_logical_stream = physical_stream;
+   core->active_audio_stream = (uint8_t)(0x80u + (unsigned)physical_stream);
+   core->has_active_audio_stream = true;
+   if (core->dvdnav_active)
+      (void)deevee_dvdnav_set_active_stream(&core->dvdnav, true,
+            physical_stream);
+   reset_audio_stream_buffers(core);
+   core->track_options_dirty = true;
+   return true;
+}
+
 uint64_t deevee_core_subpicture_payload_count(const struct deevee_core *core)
 {
    return core ? (uint64_t)core->subpicture_chunk_count : 0;
@@ -2788,6 +3954,91 @@ unsigned deevee_core_active_subpicture_stream(const struct deevee_core *core)
       core->active_subpicture_stream : 0;
 }
 
+unsigned deevee_core_subpicture_stream_count(const struct deevee_core *core)
+{
+   return core ? core->subpicture_stream_count : 0;
+}
+
+int deevee_core_active_subpicture_logical_stream(const struct deevee_core *core)
+{
+   return core ? core->active_subpicture_logical_stream : -1;
+}
+
+int deevee_core_active_subpicture_physical_stream(const struct deevee_core *core)
+{
+   return core ? core->active_subpicture_physical_stream : -1;
+}
+
+bool deevee_core_subpicture_visible(const struct deevee_core *core)
+{
+   return core && core->subpicture_visible;
+}
+
+const char *deevee_core_subpicture_stream_label(const struct deevee_core *core,
+      unsigned index)
+{
+   if (!core || index >= core->subpicture_stream_count ||
+         !core->subpicture_streams[index].label[0])
+      return "";
+
+   return core->subpicture_streams[index].label;
+}
+
+bool deevee_core_set_subtitle_track(struct deevee_core *core,
+      int physical_stream, bool visible)
+{
+   if (!core)
+      return false;
+
+   core->subpicture_visible = visible;
+   if (core->dvdnav_active)
+      (void)deevee_dvdnav_set_spu_visible(&core->dvdnav, visible);
+
+   if (physical_stream < 0)
+   {
+      core->subpicture_stream_forced = false;
+      refresh_track_inventory(core);
+      reset_subpicture_stream_buffers(core);
+      core->track_options_dirty = true;
+      return true;
+   }
+
+   if (physical_stream >= (int)DEEVEE_MAX_SUBTITLE_STREAMS)
+      return false;
+   if (!core->subpicture_stream_count ||
+         physical_stream >= (int)core->subpicture_stream_count)
+      return false;
+   if (core->subpicture_stream_forced &&
+         core->forced_subpicture_physical_stream == physical_stream &&
+         core->subpicture_visible == visible)
+      return true;
+
+   core->subpicture_stream_forced = true;
+   core->forced_subpicture_physical_stream = physical_stream;
+   core->active_subpicture_physical_stream = physical_stream;
+   core->active_subpicture_logical_stream = physical_stream;
+   core->active_subpicture_stream =
+      (uint8_t)(0x20u + (unsigned)physical_stream);
+   core->has_active_subpicture_stream = true;
+   if (core->dvdnav_active)
+      (void)deevee_dvdnav_set_active_stream(&core->dvdnav, false,
+            physical_stream);
+   reset_subpicture_stream_buffers(core);
+   core->track_options_dirty = true;
+   return true;
+}
+
+bool deevee_core_track_options_dirty(const struct deevee_core *core)
+{
+   return core && core->track_options_dirty;
+}
+
+void deevee_core_clear_track_options_dirty(struct deevee_core *core)
+{
+   if (core)
+      core->track_options_dirty = false;
+}
+
 unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core)
 {
    return core ? core->video_frame_rate_code : 0;
@@ -2796,6 +4047,47 @@ unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core)
 unsigned deevee_core_video_frame_duration_ticks(const struct deevee_core *core)
 {
    return core ? core->video_frame_duration_ticks : 0;
+}
+
+unsigned deevee_core_last_decoded_frame_duration_ticks(
+      const struct deevee_core *core)
+{
+   return core ? core->last_decoded_frame_duration_ticks : 0;
+}
+
+int deevee_core_last_decoded_repeat_pict(const struct deevee_core *core)
+{
+   return core ? core->last_decoded_repeat_pict : 0;
+}
+
+bool deevee_core_dvdnav_active(const struct deevee_core *core)
+{
+   return core && core->dvdnav_active;
+}
+
+bool deevee_core_dvdnav_has_position(const struct deevee_core *core)
+{
+   return core && core->dvdnav_has_position;
+}
+
+int deevee_core_dvdnav_title(const struct deevee_core *core)
+{
+   return core ? core->dvdnav_title : 0;
+}
+
+int deevee_core_dvdnav_part(const struct deevee_core *core)
+{
+   return core ? core->dvdnav_part : 0;
+}
+
+int deevee_core_dvdnav_parts(const struct deevee_core *core)
+{
+   return core ? core->dvdnav_parts : 0;
+}
+
+int64_t deevee_core_dvdnav_time_ticks(const struct deevee_core *core)
+{
+   return core ? core->dvdnav_time_ticks : -1;
 }
 
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core)

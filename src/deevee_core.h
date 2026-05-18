@@ -16,6 +16,9 @@
 #include "deevee_video.h"
 
 #define DEEVEE_VIDEO_FRAME_QUEUE_CAPACITY 8u
+#define DEEVEE_MAX_AUDIO_STREAMS 8u
+#define DEEVEE_MAX_SUBTITLE_STREAMS 32u
+#define DEEVEE_TRACK_LABEL_LENGTH 64u
 
 struct deevee_frame
 {
@@ -56,6 +59,19 @@ struct deevee_subpicture_payload_chunk
    uint8_t stream_id;
 };
 
+struct deevee_track_info
+{
+   bool present;
+   int logical;
+   int physical;
+   uint16_t language;
+   uint16_t format;
+   uint16_t channels;
+   uint8_t code_extension;
+   bool has_code_extension;
+   char label[DEEVEE_TRACK_LABEL_LENGTH];
+};
+
 struct deevee_decoded_video_frame
 {
    uint32_t *pixels;
@@ -63,6 +79,7 @@ struct deevee_decoded_video_frame
    bool has_pts;
    int64_t pts;
    unsigned display_ticks;
+   int repeat_pict;
    unsigned width;
    unsigned height;
    int pixel_format;
@@ -80,6 +97,11 @@ struct deevee_core
    struct deevee_audio audio;
    struct deevee_dvdnav dvdnav;
    bool dvdnav_active;
+   bool dvdnav_has_position;
+   int dvdnav_title;
+   int dvdnav_part;
+   int dvdnav_parts;
+   int64_t dvdnav_time_ticks;
    struct deevee_video_decoder decoder;
    uint32_t *decoder_output_pixels;
    struct deevee_decoded_video_frame frame_queue[
@@ -91,11 +113,14 @@ struct deevee_core
    int64_t frame_clock_pts;
    bool frame_clock_has_pts;
    unsigned display_frame_ticks_remaining;
+   unsigned display_frame_tick_remainder;
    uint64_t displayed_frames;
    uint64_t repeated_frames;
    uint64_t decode_underruns;
    uint64_t queue_drops;
    uint64_t fallback_timing_frames;
+   unsigned last_decoded_frame_duration_ticks;
+   int last_decoded_repeat_pict;
    uint8_t *menu_video_payloads;
    size_t menu_video_payload_size;
    size_t menu_video_payload_capacity;
@@ -111,6 +136,14 @@ struct deevee_core
    size_t audio_chunk_capacity;
    size_t next_audio_chunk;
    uint64_t audio_payload_packets;
+   uint8_t active_audio_stream;
+   bool has_active_audio_stream;
+   int active_audio_logical_stream;
+   int active_audio_physical_stream;
+   int forced_audio_physical_stream;
+   bool audio_stream_forced;
+   unsigned audio_stream_count;
+   struct deevee_track_info audio_streams[DEEVEE_MAX_AUDIO_STREAMS];
    uint8_t *subpicture_payloads;
    size_t subpicture_payload_size;
    size_t subpicture_payload_capacity;
@@ -129,6 +162,14 @@ struct deevee_core
    int64_t subpicture_assembly_pts;
    uint8_t active_subpicture_stream;
    bool has_active_subpicture_stream;
+   int active_subpicture_logical_stream;
+   int active_subpicture_physical_stream;
+   int forced_subpicture_physical_stream;
+   bool subpicture_stream_forced;
+   bool subpicture_visible;
+   unsigned subpicture_stream_count;
+   struct deevee_track_info subpicture_streams[DEEVEE_MAX_SUBTITLE_STREAMS];
+   bool track_options_dirty;
    bool subpicture_frame_ready;
    uint64_t subpicture_decode_errors;
    uint8_t active_button_color_table;
@@ -137,6 +178,12 @@ struct deevee_core
    uint32_t select_color_table[3];
    bool has_subpicture_clut;
    bool has_select_color_table;
+   uint16_t active_highlight_x_start;
+   uint16_t active_highlight_x_end;
+   uint16_t active_highlight_y_start;
+   uint16_t active_highlight_y_end;
+   uint32_t active_highlight_palette;
+   bool has_active_highlight;
    unsigned menu_frame_hold;
    unsigned menu_frame_repeat;
    uint8_t video_aspect_ratio_code;
@@ -163,6 +210,7 @@ struct deevee_core
    bool menu_at_end;
    bool menu_loop_enabled;
    bool playback_is_title;
+   bool playback_paused;
    bool menu_last_frame_has_pts;
    int64_t menu_last_frame_pts;
    bool menu_previous_frame_has_pts;
@@ -199,13 +247,39 @@ uint64_t deevee_core_audio_decode_errors(const struct deevee_core *core);
 uint64_t deevee_core_audio_underruns(const struct deevee_core *core);
 unsigned deevee_core_audio_last_sample_rate(const struct deevee_core *core);
 unsigned deevee_core_audio_last_channels(const struct deevee_core *core);
+unsigned deevee_core_active_audio_stream(const struct deevee_core *core);
+unsigned deevee_core_audio_stream_count(const struct deevee_core *core);
+int deevee_core_active_audio_logical_stream(const struct deevee_core *core);
+int deevee_core_active_audio_physical_stream(const struct deevee_core *core);
+const char *deevee_core_audio_stream_label(const struct deevee_core *core,
+      unsigned index);
+bool deevee_core_set_audio_track(struct deevee_core *core, int physical_stream);
 uint64_t deevee_core_subpicture_payload_count(const struct deevee_core *core);
 uint64_t deevee_core_subpicture_decode_errors(const struct deevee_core *core);
 bool deevee_core_subpicture_frame_ready(const struct deevee_core *core);
 unsigned deevee_core_subpicture_rect_count(const struct deevee_core *core);
 unsigned deevee_core_active_subpicture_stream(const struct deevee_core *core);
+unsigned deevee_core_subpicture_stream_count(const struct deevee_core *core);
+int deevee_core_active_subpicture_logical_stream(const struct deevee_core *core);
+int deevee_core_active_subpicture_physical_stream(const struct deevee_core *core);
+bool deevee_core_subpicture_visible(const struct deevee_core *core);
+const char *deevee_core_subpicture_stream_label(const struct deevee_core *core,
+      unsigned index);
+bool deevee_core_set_subtitle_track(struct deevee_core *core,
+      int physical_stream, bool visible);
+bool deevee_core_track_options_dirty(const struct deevee_core *core);
+void deevee_core_clear_track_options_dirty(struct deevee_core *core);
 unsigned deevee_core_video_frame_rate_code(const struct deevee_core *core);
 unsigned deevee_core_video_frame_duration_ticks(const struct deevee_core *core);
+unsigned deevee_core_last_decoded_frame_duration_ticks(
+      const struct deevee_core *core);
+int deevee_core_last_decoded_repeat_pict(const struct deevee_core *core);
+bool deevee_core_dvdnav_active(const struct deevee_core *core);
+bool deevee_core_dvdnav_has_position(const struct deevee_core *core);
+int deevee_core_dvdnav_title(const struct deevee_core *core);
+int deevee_core_dvdnav_part(const struct deevee_core *core);
+int deevee_core_dvdnav_parts(const struct deevee_core *core);
+int64_t deevee_core_dvdnav_time_ticks(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_width(const struct deevee_core *core);
 unsigned deevee_core_menu_last_frame_height(const struct deevee_core *core);
 int deevee_core_menu_last_pixel_format(const struct deevee_core *core);

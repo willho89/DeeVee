@@ -9,6 +9,28 @@
 #include <libswscale/swscale.h>
 #endif
 
+static int parse_mpeg2_repeat_pict(const uint8_t *payload,
+      size_t payload_size)
+{
+   size_t i;
+
+   if (!payload || payload_size < 9u)
+      return 0;
+
+   for (i = 0; i + 9u <= payload_size; i++)
+   {
+      if (payload[i] == 0x00 && payload[i + 1u] == 0x00 &&
+            payload[i + 2u] == 0x01 && payload[i + 3u] == 0xb5 &&
+            (payload[i + 4u] >> 4) == 0x08)
+      {
+         bool repeat_first_field = (payload[i + 8u] & 0x20u) != 0;
+         return repeat_first_field ? 1 : 0;
+      }
+   }
+
+   return 0;
+}
+
 enum deevee_decoder_status deevee_decoder_init(
       struct deevee_video_decoder *decoder)
 {
@@ -189,6 +211,10 @@ static enum deevee_decoder_status receive_available_frames(
       probe->pixel_format = frame->format;
       probe->has_pts = false;
       probe->pts = 0;
+      probe->repeat_pict = frame->repeat_pict;
+      if (!probe->repeat_pict && decoder->pending_repeat_pict)
+         probe->repeat_pict = decoder->pending_repeat_pict;
+      decoder->pending_repeat_pict = 0;
       if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
       {
          probe->has_pts = true;
@@ -234,6 +260,11 @@ static enum deevee_decoder_status send_decoder_packet(
    }
 
    memcpy(packet->data, payload, payload_size);
+   {
+      int parsed_repeat_pict = parse_mpeg2_repeat_pict(payload, payload_size);
+      if (parsed_repeat_pict)
+         decoder->pending_repeat_pict = parsed_repeat_pict;
+   }
    if (has_pts)
       packet->pts = pts;
    if (has_dts)
@@ -291,6 +322,8 @@ enum deevee_decoder_status deevee_decoder_decode_mpeg2_timed_payload(
 
       context = (AVCodecContext *)decoder->context;
       parser = (AVCodecParserContext *)decoder->parser;
+      decoder->pending_repeat_pict = parse_mpeg2_repeat_pict(payload,
+            payload_size);
       if (!parser)
          return send_decoder_packet(decoder, payload, payload_size, has_pts,
                (int64_t)pts, has_dts, (int64_t)dts, probe);

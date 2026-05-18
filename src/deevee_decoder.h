@@ -28,6 +28,7 @@ struct deevee_decoder_frame_probe
    bool got_frame;
    bool has_pts;
    int64_t pts;
+   int repeat_pict;
 };
 
 typedef void (*deevee_decoder_frame_callback)(
@@ -46,6 +47,7 @@ struct deevee_video_decoder
    unsigned output_height;
    size_t output_pitch;
    bool output_ready;
+   int pending_repeat_pict;
    deevee_decoder_frame_callback frame_callback;
    void *frame_callback_user_data;
 };
