@@ -93,19 +93,20 @@ FIXTURE_DIR := $(BUILD_DIR)/fixtures
 
 $(HARNESS): tests/harness.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c99 -Wall -Wextra -O1 -g $(INCFLAGS) -o $@ $< -ldl
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-parameter -O1 -g $(INCFLAGS) -o $@ $< -ldl
 
 harness: $(HARNESS)
 
-$(FIXTURE_DIR)/ntsc43.iso: tests/fixtures/make_fixture.sh
+$(FIXTURE_DIR)/ntsc43.iso $(FIXTURE_DIR)/pal169.iso &: tests/fixtures/make_fixture.sh
 	tests/fixtures/make_fixture.sh $(FIXTURE_DIR)
 
 fixture: $(FIXTURE_DIR)/ntsc43.iso
 
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
-check: $(TARGET) $(HARNESS) $(FIXTURE_DIR)/ntsc43.iso
+check: $(TARGET) $(HARNESS) $(FIXTURE_DIR)/ntsc43.iso $(FIXTURE_DIR)/pal169.iso
 	@mkdir -p $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
+	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 600 $(BUILD_DIR)/system
 
 .PHONY: harness fixture check

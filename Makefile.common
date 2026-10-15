@@ -6,4 +6,8 @@ INCFLAGS := -I$(CORE_DIR) -I$(LIBRETRO_COMM_DIR)/include
 SOURCES_C := \
 	$(CORE_DIR)/libretro.c \
 	$(CORE_DIR)/dv_source.c \
-	$(CORE_DIR)/dv_nav.c
+	$(CORE_DIR)/dv_nav.c \
+	$(CORE_DIR)/dv_clock.c \
+	$(CORE_DIR)/dv_ps.c \
+	$(CORE_DIR)/dv_video.c \
+	$(CORE_DIR)/dv_render.c

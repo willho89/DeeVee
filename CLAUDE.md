@@ -328,7 +328,7 @@ Re-check versions at the start of M0 and M7.
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 Skeleton | ☑ Done (2026-10-15) | Repo, submodules, Makefile (`static`/`dlopen`/`none` all build + play the fixture), libretro.c/dv_source.c/dv_nav.c, `tests/harness.c`, dvdauthor fixture, `make check`. Acceptance passed in Steam RetroArch (VFS path) on the fixture and on `TestISOs/IDIOCRACY_SIDEA.iso` (CSS keys OK, region-1, 11 titles/6 VTS). Build env: distrobox `deevee-build`; run RetroArch via `SteamLinuxRuntime/steam-runtime/run.sh ./retroarch.sh` from its dir (needs libCg). **Next: M1.** |
-| M1 Video | ☐ | |
+| M1 Video | ☑ Done (2026-10-15) — PAL real-disc check pending | dv_ps/dv_video/dv_render/dv_clock + nav fill/service loop; VLC still handling (seq-end + vobu_se_e_ptm flush); timed/infinite stills; WAIT drains to clock; geometry/timing from first picture, SET_GEOMETRY / SET_SYSTEM_AV_INFO on change. Acceptance: IDIOCRACY 16:9 NTSC film feature 10 min (f10478→f46500) 0 drops, 0 errors, 2/3 pulldown cadence; 4:3 NTSC trailer + fixture; PAL 16:9 only on the synthetic `pal169` fixture (no real PAL disc available). TIMERIC + CHRIMBUS run clean (menus wait correctly). ~1.3 ms/tick on the Deck. **Temporary:** A = activate button / skip still (dv_nav_activate) until M4. |
 | M2 Audio/sync | ☐ | |
 | M3 SPU | ☐ | |
 | M4 Menus | ☐ | |
@@ -347,6 +347,11 @@ Re-check versions at the start of M0 and M7.
 - `libdvdnav: Suspected RCE Region Protection!!!` (raw stdout from vm/decoder.c) fires whenever a disc's VM reads SPRM 20. Informational. IDIOCRACY_SIDEA (region 1) triggers it and passes with VM region 1 — reuse as the M5 RCE test.
 - Repo is **local-only** for now (no remote; user decision 2026-10-15). Don't push or set up hosted CI; run `make check` + `make DEEVEE_CSS=none` locally instead of the CI job in the §9 risk register.
 - Test media lives in `TestISOs/` (gitignored, never commit).
+- Most commercial discs only put PTS on a few pictures per GOP (IDIOCRACY: ~90 % of frames interpolated). `dv_video` interpolates `next_pts = pts + duration`, duration = frame period × (2+repeat_pict)/2.
+- Menu buttons can be absent during a menu's intro animation (`hli_ss 0, btn_ns 0`): activation does nothing until highlight info appears — correct, VLC behaves the same.
+- Test discs (TestISOs/): **IDIOCRACY_SIDEA** — region 1, RCE check, 2× 7 s timed stills, 4:3 trailer, 16:9 motion main menu (buttons appear ~f9500), Play → intro title 9 → 7 s notice → title 1 film feature with pulldown. **TIMERIC** — region-free, 25 VTS, VMGM is a still picture + ~294 s audio loop. **TIM_AND_ERIC_CHRIMBUS_SPECIAL** — region 1, intro then VTSM menu with music then infinite still.
+- Harness: `HARNESS_INPUT="9500:A"`, `HARNESS_DUMP=<dir>` + `HARNESS_DUMP_FRAMES` / `HARNESS_DUMP_EVERY`; log lines are prefixed `[f<frame>]`. Useful IDIOCRACY feature run: `HARNESS_INPUT=9500:A`, 46500 frames.
+- VLC 3.0.x reference sources are sparse-checked-out in `refs/vlc` (gitignored) @ 843607a066be.
 - libdvdnav exposes no VTS count; `dv_nav_log_disc_info` reads it from the VMG IFO via a short-lived libdvdread handle.
 
 ## 13. Decision log
@@ -359,9 +364,11 @@ Re-check versions at the start of M0 and M7.
 | D-004 | Core license GPL-2.0-or-later. | Compatible with all deps and VLC ports. | Accepted |
 | D-005 | Single-threaded pull model first; threads only for device read-ahead. | Simplicity, portability, menu latency. | Accepted |
 | D-006 | Software XRGB8888 output first; GL path later. | Fastest to correct; SD is cheap. | Accepted |
-| D-007 | Pin FFmpeg **n8.1.3**, not the newest n9.0.2. | n9.0 is a fresh major with API removals; 8.1.x is the mature stable line. Revisit at M7 (§11). | Accepted (2026-10-15), user may override |
+| D-007 | Pin FFmpeg **n8.1.3**, not the newest n9.0.2. | n9.0 is a fresh major with API removals; 8.1.x is the mature stable line and has every API we use. Revisit at M7 (§11). | Accepted (2026-10-15), confirmed by user |
 | D-008 | `DEEVEE_CSS=none` builds libdvdread identically to `dlopen` (`-Dlibdvdcss=disabled`); only the reported mode differs. | libdvdread has no "never load CSS" switch; it always attempts `dlopen` when not linked. `none` = "no CSS code in the binary"; CI must run where libdvdcss is absent. | Accepted (2026-10-15) |
 | D-009 | Toolchain on the Steam Deck dev box: distrobox `deevee-build` (Ubuntu 24.04). Core links only against libc, so the container-built `.so` runs in host RetroArch. | SteamOS root is read-only; container leaves host untouched. | Accepted (2026-10-15) |
+| D-010 | On `HOP_CHANNEL` re-anchor the clock but **don't** flush decoders and **keep** VOBU continuity (VLC behaviour). Hard flush (`dv_video_flush`) is for user seeks only (M6). §5.2 table said "flush all". | Flushing drops the tail of every looping menu; resetting continuity made post-jump PTS land behind queued frames and caused false late-drops. | Accepted (2026-10-15) |
+| D-011 | Block reading is gated on the furthest demuxed **audio/video** PTS (≤ clock + 1.5 s), not only the video queue; WAIT release and still timers wait until the clock has presented everything demuxed (VLC `ES_OUT_GET_EMPTY` equivalent). | Still-picture menus with minutes of audio (TIMERIC VMGM) otherwise get read in a few ticks and loop at high speed. | Accepted (2026-10-15) |
  
 ---
  

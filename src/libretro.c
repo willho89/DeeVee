@@ -10,19 +10,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <math.h>
+
 #include <libretro.h>
+#include <libavcodec/avcodec.h>
 
 #include "dv_ctx.h"
 
-#define DV_BASE_WIDTH   720
-#define DV_BASE_HEIGHT  480
-#define DV_MAX_WIDTH    720
-#define DV_MAX_HEIGHT   576
 #define DV_SAMPLE_RATE  48000
+#define DV_FPS_NTSC     (60000.0 / 1001.0)
+#define DV_FPS_PAL      50.0
 
-/* Packs pulled per retro_run while there is no decoder to pace against.
- * 16 x 2 KiB x 59.94 Hz ≈ 1.9 MiB/s — roughly a DVD's peak mux rate. */
-#define DV_M0_BLOCKS_PER_FRAME 16
+/* Max packs read per retro_run. Normal playback needs ~10 (≈10 Mbit/s);
+ * the cap only bounds a pathological stretch with no decodable video. */
+#define DV_BLOCKS_PER_RUN 2048
+/* At load: read up to this many packs looking for the first picture, so
+ * initial geometry/timing (NTSC vs PAL) is right without a reinit. */
+#define DV_PRIME_BLOCKS   16384
 
 static retro_environment_t        environ_cb;
 static retro_video_refresh_t      video_cb;
@@ -33,10 +37,13 @@ static retro_input_state_t        input_state_cb;
 static retro_log_printf_t         log_cb;
 
 static dv_ctx_t *g_ctx;
+static bool      g_can_dupe;
+static bool      g_prev_a;
 
-static uint32_t g_frame[DV_MAX_WIDTH * DV_MAX_HEIGHT];
+/* What the frontend currently believes. */
+static struct retro_system_av_info g_av;
+
 static int16_t  g_silence[2 * 2048];
-static double   g_fps = 60000.0 / 1001.0;
 static double   g_audio_accum;
 
 /* ---- logging ---------------------------------------------------------- */
@@ -106,17 +113,61 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
    info->block_extract    = true;
 }
 
-RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+static void default_av_info(struct retro_system_av_info *info)
 {
    memset(info, 0, sizeof(*info));
-   /* TODO(M1): geometry/timing from the VTS video attributes. */
-   info->geometry.base_width   = DV_BASE_WIDTH;
-   info->geometry.base_height  = DV_BASE_HEIGHT;
+   info->geometry.base_width   = 720;
+   info->geometry.base_height  = 480;
    info->geometry.max_width    = DV_MAX_WIDTH;
    info->geometry.max_height   = DV_MAX_HEIGHT;
    info->geometry.aspect_ratio = 4.0f / 3.0f;
-   info->timing.fps            = g_fps;
+   info->timing.fps            = DV_FPS_NTSC;
    info->timing.sample_rate    = DV_SAMPLE_RATE;
+}
+
+RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+   *info = g_av;
+}
+
+/* Output rate for the picture just decoded: 25 Hz content -> 50, else 59.94
+ * (29.97 video and 23.976 film with pulldown). */
+static double content_fps(const dv_ctx_t *ctx)
+{
+   AVRational fr = ctx->video.avctx->framerate;
+   if (fr.den > 0 && fr.num == 25 * fr.den)
+      return DV_FPS_PAL;
+   return DV_FPS_NTSC;
+}
+
+/* Tell the frontend about geometry/timing changes of the rendered picture. */
+static void update_av_info(dv_ctx_t *ctx)
+{
+   const dv_render_t *r = &ctx->render;
+   double fps = content_fps(ctx);
+   bool timing   = fps != g_av.timing.fps;
+   bool geometry = r->width  != g_av.geometry.base_width ||
+                   r->height != g_av.geometry.base_height ||
+                   fabs(r->dar - g_av.geometry.aspect_ratio) > 0.001;
+
+   if (!timing && !geometry)
+      return;
+
+   g_av.geometry.base_width   = r->width;
+   g_av.geometry.base_height  = r->height;
+   g_av.geometry.aspect_ratio = (float)r->dar;
+   g_av.timing.fps            = fps;
+
+   dv_log(ctx, RETRO_LOG_INFO, "Output: %ux%u, aspect %.4f, %.3f Hz\n",
+          r->width, r->height, r->dar, fps);
+
+   if (timing)
+   {
+      dv_clock_set_fps(&ctx->clock, fps);
+      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &g_av);
+   }
+   else
+      environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g_av.geometry);
 }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -132,7 +183,7 @@ static void output_silence(void)
 {
    /* Fractional accumulation so 48000/59.94 = 800.8 averages out exactly. */
    size_t frames;
-   g_audio_accum += DV_SAMPLE_RATE / g_fps;
+   g_audio_accum += DV_SAMPLE_RATE / g_av.timing.fps;
    frames = (size_t)g_audio_accum;
    g_audio_accum -= (double)frames;
 
@@ -144,14 +195,44 @@ static void output_silence(void)
    }
 }
 
+static void poll_input(dv_ctx_t *ctx)
+{
+   /* Temporary M1 binding: A = activate menu button / skip still (M4 does
+    * the full §5.9 mapping). */
+   bool a = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A) != 0;
+   if (a && !g_prev_a)
+      dv_nav_activate(ctx);
+   g_prev_a = a;
+}
+
 RETRO_API void retro_run(void)
 {
+   dv_ctx_t *ctx = g_ctx;
+   dv_render_t *r = &ctx->render;
+
    input_poll_cb();
+   poll_input(ctx);
 
-   if (g_ctx)
-      dv_nav_pump(g_ctx, DV_M0_BLOCKS_PER_FRAME);
+   dv_clock_advance(&ctx->clock);
+   dv_nav_fill(ctx, DV_BLOCKS_PER_RUN);
+   dv_video_present(ctx);
+   dv_nav_service(ctx);
 
-   video_cb(g_frame, DV_BASE_WIDTH, DV_BASE_HEIGHT, DV_MAX_WIDTH * sizeof(uint32_t));
+   if (ctx->video.current_new)
+   {
+      ctx->video.current_new = false;
+      if (dv_render_frame(ctx, ctx->video.current.frame))
+      {
+         update_av_info(ctx);
+         video_cb(r->buf, r->width, r->height, r->width * sizeof(uint32_t));
+      }
+      else
+         video_cb(g_can_dupe ? NULL : r->buf, r->width, r->height, r->width * sizeof(uint32_t));
+   }
+   else
+      video_cb(g_can_dupe && r->valid ? NULL : r->buf, r->width, r->height,
+               r->width * sizeof(uint32_t));
+
    output_silence();
 }
 
@@ -185,11 +266,18 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    dv_log(g_ctx, RETRO_LOG_INFO, "DeeVee %s (css:%s), VFS %s\n", DV_VERSION,
           DEEVEE_CSS_MODE, g_ctx->vfs ? "available" : "unavailable (stdio fallback)");
 
-   dv_source_setup_css_env(g_ctx);
+   g_can_dupe = false;
+   environ_cb(RETRO_ENVIRONMENT_GET_CAN_DUPE, &g_can_dupe);
 
-   if (!dv_source_resolve(g_ctx, game->path, &g_ctx->source) ||
+   dv_source_setup_css_env(g_ctx);
+   dv_clock_init(&g_ctx->clock, DV_FPS_NTSC);
+
+   if (!dv_video_init(g_ctx) || !dv_render_init(g_ctx) ||
+       !dv_source_resolve(g_ctx, game->path, &g_ctx->source) ||
        !dv_nav_open(g_ctx, &g_ctx->source))
    {
+      dv_video_free(g_ctx);
+      dv_render_free(g_ctx);
       free(g_ctx);
       g_ctx = NULL;
       return false;
@@ -197,8 +285,29 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    dv_nav_log_disc_info(g_ctx, &g_ctx->source);
 
-   memset(g_frame, 0, sizeof(g_frame));
+   /* Prime: decode up to the first picture so the first av_info is right. */
+   dv_nav_fill(g_ctx, DV_PRIME_BLOCKS);
+   default_av_info(&g_av);
+   if (dv_video_queued(&g_ctx->video))
+   {
+      const dv_vframe_t *first = &g_ctx->video.queue[g_ctx->video.qhead];
+      if (dv_render_frame(g_ctx, first->frame))
+      {
+         g_av.geometry.base_width   = g_ctx->render.width;
+         g_av.geometry.base_height  = g_ctx->render.height;
+         g_av.geometry.aspect_ratio = (float)g_ctx->render.dar;
+         g_av.timing.fps            = content_fps(g_ctx);
+      }
+   }
+   else
+      dv_log(g_ctx, RETRO_LOG_WARN, "No picture found while priming.\n");
+   dv_clock_set_fps(&g_ctx->clock, g_av.timing.fps);
+   dv_log(g_ctx, RETRO_LOG_INFO, "Initial output: %ux%u, aspect %.4f, %.3f Hz\n",
+          g_av.geometry.base_width, g_av.geometry.base_height,
+          g_av.geometry.aspect_ratio, g_av.timing.fps);
+
    g_audio_accum = 0.0;
+   g_prev_a      = false;
    return true;
 }
 
@@ -211,8 +320,25 @@ RETRO_API void retro_unload_game(void)
 {
    if (!g_ctx)
       return;
-   dv_log(g_ctx, RETRO_LOG_INFO, "Unloading (%u packs read).\n", g_ctx->nav.blocks);
+   {
+      const dv_video_t *v = &g_ctx->video;
+      const dv_nav_t *n = &g_ctx->nav;
+      const dv_ps_stats_t *ps = &g_ctx->ps_stats;
+      dv_log(g_ctx, RETRO_LOG_INFO,
+             "Stats: packs %u (video PES %u, audio %u, spu %u, other %u, errors %u); "
+             "stills %u, waits %u, hops %u, vobu discontinuities %u\n",
+             n->blocks, ps->video_pes, ps->audio_pes, ps->spu_pes, ps->other_pes,
+             ps->errors, n->stills, n->waits, n->hops, n->discontinuities);
+      dv_log(g_ctx, RETRO_LOG_INFO,
+             "Video: decoded %u, presented %u, dropped %u, overflow %u, interpolated %u, errors %u; "
+             "cadence (ticks/frame) 1:%u 2:%u 3:%u 4:%u 5+:%u\n",
+             v->decoded, v->presented, v->dropped, v->overflow, v->interpolated, v->errors,
+             v->cadence[1], v->cadence[2], v->cadence[3], v->cadence[4],
+             v->cadence[5] + v->cadence[6] + v->cadence[7]);
+   }
    dv_nav_close(g_ctx);
+   dv_video_free(g_ctx);
+   dv_render_free(g_ctx);
    free(g_ctx);
    g_ctx = NULL;
 }
