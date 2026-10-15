@@ -346,6 +346,7 @@ Re-check versions at the start of M0 and M7.
 - Harmless upstream log noise on file sources: "Device name string NULL", "Can't read name block", `findDirFile ... video_ts/`.
 - `libdvdnav: Suspected RCE Region Protection!!!` (raw stdout from vm/decoder.c) fires whenever a disc's VM reads SPRM 20. Informational. IDIOCRACY_SIDEA (region 1) triggers it and passes with VM region 1 — reuse as the M5 RCE test.
 - Repo is **local-only** for now (no remote; user decision 2026-10-15). Don't push or set up hosted CI; run `make check` + `make DEEVEE_CSS=none` locally instead of the CI job in the §9 risk register.
+- **Never pass `--appendconfig` to the user's Steam RetroArch**: `config_save_on_exit = true` writes the appended settings into its `retroarch.cfg` (2026-10-15 this silently set `audio_driver = "null"`; original is `"pulse"`). For silent/automated RA runs, copy `retroarch.cfg` to the scratchpad, edit the copy, and launch with `--config <copy>`.
 - Test media lives in `TestISOs/` (gitignored, never commit).
 - Most commercial discs only put PTS on a few pictures per GOP (IDIOCRACY: ~90 % of frames interpolated). `dv_video` interpolates `next_pts = pts + duration`, duration = frame period × (2+repeat_pict)/2.
 - Menu buttons can be absent during a menu's intro animation (`hli_ss 0, btn_ns 0`): activation does nothing until highlight info appears — correct, VLC behaves the same.
