@@ -7,6 +7,10 @@
 # Produces, each as <name>/VIDEO_TS and <name>.iso:
 #   ntsc43  — First Play -> title 1: NTSC 720x480 4:3, 29.97, 2 chapters, AC-3
 #   pal169  — First Play -> title 1: PAL 720x576 16:9 anamorphic, 25, 2 chapters, AC-3
+#   avs_ac3, avs_lpcm, avs_mp2, avs_dts — A/V sync: NTSC 4:3, a 2-frame white
+#            flash and a 100 ms 1 kHz beep every 30 frames (1.001 s, frame-aligned), as two 10 s
+#            VOB files (= two cells, PTS restart at the boundary).
+#            avs_ac3 is 5.1 with the beep only in the centre channel.
 set -euo pipefail
 OUT=${1:?usage: make_fixture.sh <out_dir>}
 mkdir -p "$OUT"
@@ -47,5 +51,48 @@ XML
   echo "fixture: $OUT/$name.iso"
 }
 
+# make_avsync <name> <dvdauthor audio format> <extra audio filter> <ffmpeg audio args...>
+make_avsync() {
+  local name=$1 afmt=$2 afilt=$3; shift 3
+  export VIDEO_FORMAT=NTSC
+  local seg
+  for seg in a b; do
+    ffmpeg -hide_banner -loglevel error -y \
+      -f lavfi -i "color=c=black:s=720x480:r=30000/1001:d=10" \
+      -f lavfi -i "color=c=white:s=720x480:r=30000/1001:d=10" \
+      -f lavfi -i "sine=frequency=1000:sample_rate=48000:samples_per_frame=16:d=10" \
+      -filter_complex "[0][1]overlay=enable='lt(mod(t\,1.001)\,0.066)'[v];[2]volume=volume=0:enable='gte(mod(t\,1.001)\,0.1)',$afilt[a]" \
+      -map "[v]" -map "[a]" -target ntsc-dvd -aspect 4:3 "$@" "$WORK/${name}_$seg.mpg"
+  done
+
+  cat > "$WORK/$name.xml" <<XML
+<dvdauthor dest="$OUT/$name">
+  <vmgm>
+    <fpc>jump title 1;</fpc>
+  </vmgm>
+  <titleset>
+    <titles>
+      <video format="ntsc" aspect="4:3"/>
+      <audio format="$afmt" lang="en"/>
+      <pgc>
+        <vob file="$WORK/${name}_a.mpg"/>
+        <vob file="$WORK/${name}_b.mpg"/>
+        <post>exit;</post>
+      </pgc>
+    </titles>
+  </titleset>
+</dvdauthor>
+XML
+  rm -rf "${OUT:?}/$name"
+  dvdauthor -x "$WORK/$name.xml" >/dev/null 2>&1
+  genisoimage -quiet -dvd-video -V "DEEVEE_${name^^}" -o "$OUT/$name.iso" "$OUT/$name"
+  echo "fixture: $OUT/$name.iso"
+}
+
 make_disc ntsc43 ntsc 4:3  720x480 30000/1001 DEEVEE_NTSC43
 make_disc pal169 pal  16:9 720x576 25         DEEVEE_PAL169
+
+make_avsync avs_ac3  ac3 "pan=5.1|FC=c0" -c:a ac3 -ac 6 -b:a 448k
+make_avsync avs_lpcm pcm anull -c:a pcm_s16be -ac 2
+make_avsync avs_mp2  mp2 anull -c:a mp2 -ac 2 -b:a 224k
+make_avsync avs_dts  dts anull -c:a dca -strict -2 -ac 2 -b:a 768k

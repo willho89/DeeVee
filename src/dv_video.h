@@ -3,7 +3,13 @@
  * Copyright (C) 2026 DeeVee contributors
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * MPEG-1/2 video decode -> timestamped frame queue (CLAUDE.md §5.4).
+ * MPEG-1/2 video (CLAUDE.md §5.4): PES -> parser -> compressed picture FIFO
+ * -> decode on demand -> timestamped frame queue -> presentation.
+ *
+ * The compressed FIFO exists because DVD muxes video ~0.5-1 s ahead of the
+ * audio with the same PTS: to have audio buffered for the clock we must read
+ * that far ahead, and holding a second of *decoded* SD frames would cost
+ * ~15 MB. Compressed it's ~1 MB.
  */
 #ifndef DV_VIDEO_H
 #define DV_VIDEO_H
@@ -18,7 +24,8 @@ struct AVCodecParserContext;
 struct AVPacket;
 struct AVFrame;
 
-#define DV_VIDEO_QUEUE_MAX 16
+#define DV_VIDEO_QUEUE_MAX 16    /* decoded frames */
+#define DV_VIDEO_FIFO_MAX  512   /* compressed pictures (~17 s at 29.97) */
 
 typedef struct dv_vframe
 {
@@ -31,9 +38,13 @@ typedef struct dv_video
 {
    struct AVCodecContext       *avctx;
    struct AVCodecParserContext *parser;
-   struct AVPacket             *pkt;
    struct AVFrame              *tmp;
 
+   /* compressed pictures awaiting decode (decode order) */
+   struct AVPacket *fifo[DV_VIDEO_FIFO_MAX];
+   int fhead, fcount;
+
+   /* decoded pictures awaiting presentation (display order) */
    dv_vframe_t queue[DV_VIDEO_QUEUE_MAX];
    int qhead, qcount;
 
@@ -44,7 +55,7 @@ typedef struct dv_video
    int64_t next_pts;        /* interpolation for frames without PTS */
 
    /* stats */
-   uint32_t decoded, presented, dropped, overflow, errors, interpolated;
+   uint32_t decoded, presented, dropped, overflow, errors, interpolated, fifo_overflow;
    uint32_t cadence[8];     /* how many retro_run ticks each frame was shown */
 } dv_video_t;
 
@@ -61,10 +72,15 @@ void dv_video_force_still(struct dv_ctx *ctx);
 /* Drop everything (seek). */
 void dv_video_flush(struct dv_ctx *ctx);
 
+/* Decode from the FIFO until a picture beyond the clock is queued (or, when
+ * the clock isn't anchored, until there's one picture to anchor on). */
+void dv_video_decode_ahead(struct dv_ctx *ctx);
+
 /* Pick the frame to show at the current clock. Anchors the clock if needed. */
 void dv_video_present(struct dv_ctx *ctx);
 
-static inline int dv_video_queued(const dv_video_t *v) { return v->qcount; }
-int64_t dv_video_tail_pts(const dv_video_t *v);
+/* Nothing left to show: FIFO and decoded queue both empty. */
+static inline bool dv_video_empty(const dv_video_t *v) { return v->qcount == 0 && v->fcount == 0; }
+static inline bool dv_video_fifo_full(const dv_video_t *v) { return v->fcount >= DV_VIDEO_FIFO_MAX - 8; }
 
 #endif

@@ -223,26 +223,42 @@ static const char *event_name(int event)
    }
 }
 
+/* Read-ahead targets. DVD muxes video up to ~1 s ahead of audio with the
+ * same PTS, so both streams' demux horizons must reach past the clock. */
+#define DV_READ_LEAD_MIN (90000 * 3 / 10)   /* 0.3 s */
+#define DV_READ_LEAD_MAX (90000 * 3)        /* 3 s hard cap */
+
 static bool need_more(dv_ctx_t *ctx)
 {
    const dv_nav_t *nav = &ctx->nav;
    const dv_video_t *v = &ctx->video;
+   const dv_clock_t *c = &ctx->clock;
+   double need, cap;
+   bool video_ok, audio_ok;
 
    if (nav->still || nav->wait || nav->stopped)
       return false;
-   if (v->qcount >= DV_VIDEO_QUEUE_MAX / 2)
+   if (dv_video_fifo_full(v))
       return false;
-   /* Audio/video already demuxed well past the clock: e.g. a still menu
-    * picture with minutes of audio must play out in real time, not be read
-    * in one go. 1.5 s covers DVD's mux lead (vbv delay ~0.7 s). */
-   if (dv_clock_buffered_ahead(&ctx->clock, 90000 * 1.5))
+   if (!c->anchored)
+      return v->qcount == 0;   /* until there's a picture to anchor on */
+
+   need = c->now + DV_READ_LEAD_MIN;
+   cap  = c->now + DV_READ_LEAD_MAX;
+
+   video_ok = c->video_max != DV_NOPTS && c->video_max >= need;
+   /* No audio for the selected stream (yet / in this content): don't wait
+    * for it, the cap bounds the read-ahead. */
+   audio_ok = c->audio_max == DV_NOPTS || c->audio_max >= need;
+   if (video_ok && audio_ok)
       return false;
-   if (v->qcount == 0)
-      return true;
-   if (!ctx->clock.anchored)
-      return false;  /* have a frame to anchor on */
-   /* Keep a picture queued beyond the current tick. */
-   return dv_video_tail_pts(v) <= ctx->clock.now + ctx->clock.tick * 1.5;
+
+   /* A still picture with minutes of audio, or a stream missing here: keep
+    * real-time pacing instead of reading the whole cell in one go. */
+   if ((c->video_max != DV_NOPTS && c->video_max > cap) ||
+       (c->audio_max != DV_NOPTS && c->audio_max > cap))
+      return false;
+   return true;
 }
 
 static void end_still(dv_ctx_t *ctx, bool skip)
@@ -303,13 +319,19 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
    if (!nav->dvdnav)
       return;
 
-   for (i = 0; i < max_blocks && need_more(ctx); i++)
+   for (i = 0; i < max_blocks; i++)
    {
       /* Event payloads (highlight, VTS change, ...) are written into the
        * buffer we pass; only BLOCK_OK repoints buf into libdvdnav's cache. */
       uint8_t mem[DVD_VIDEO_LB_LEN];
       uint8_t *buf = mem;
       int32_t event = 0, len = 0;
+
+      /* While looking for a picture to anchor on, decode as we go. */
+      if (!ctx->clock.anchored)
+         dv_video_decode_ahead(ctx);
+      if (!need_more(ctx))
+         break;
 
       if (dvdnav_get_next_cache_block(nav->dvdnav, &buf, &event, &len) != DVDNAV_STATUS_OK)
       {
@@ -394,8 +416,15 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             dv_video_force_still(ctx);
             break;
 
+         case DVDNAV_AUDIO_STREAM_CHANGE:
+            /* Fires at every cell start; dv_audio_select ignores no-ops.
+             * get_active_audio_stream() returns the physical stream (VM
+             * maps SPRM 1 through the PGC audio control table). */
+            dv_audio_select(ctx, dvdnav_get_active_audio_stream(nav->dvdnav));
+            break;
+
          default:
-            /* HIGHLIGHT, SPU_CLUT_CHANGE, *_STREAM_CHANGE: M3/M4. */
+            /* HIGHLIGHT, SPU_CLUT_CHANGE, SPU_STREAM_CHANGE: M3/M4. */
             break;
       }
 
@@ -409,7 +438,7 @@ void dv_nav_service(dv_ctx_t *ctx)
    dv_nav_t *nav = &ctx->nav;
 
    /* Like VLC's ES_OUT_GET_EMPTY: everything demuxed has been presented. */
-   bool drained = dv_video_queued(&ctx->video) == 0 && dv_clock_drained(&ctx->clock);
+   bool drained = dv_video_empty(&ctx->video) && dv_clock_drained(&ctx->clock);
 
    if (nav->still && drained)
    {

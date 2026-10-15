@@ -23,6 +23,8 @@ typedef struct dv_clock
 
    int64_t offset;       /* timeline = stream_pts + offset */
    int64_t demux_max;    /* furthest A/V PTS demuxed (timeline), DV_NOPTS if unknown */
+   int64_t video_max;    /* furthest video PTS demuxed */
+   int64_t audio_max;    /* furthest PTS demuxed for the selected audio stream */
    int64_t prev_e_ptm;   /* previous VOBU end PTM (stream units) */
    bool    have_prev;
 } dv_clock_t;
@@ -45,12 +47,9 @@ void    dv_clock_hop(dv_clock_t *c);
 
 int64_t dv_clock_to_timeline(const dv_clock_t *c, int64_t stream_pts);
 
-/* Track how far ahead of the clock demuxed audio/video reaches. */
-void    dv_clock_demuxed(dv_clock_t *c, int64_t timeline);
-
-/* True when buffered A/V content already reaches 'lead' ticks past the
- * clock: stop reading. */
-bool    dv_clock_buffered_ahead(const dv_clock_t *c, double lead);
+/* Track how far ahead of the clock demuxed video / selected audio reach. */
+void    dv_clock_demuxed_video(dv_clock_t *c, int64_t timeline);
+void    dv_clock_demuxed_audio(dv_clock_t *c, int64_t timeline);
 
 /* True when the clock has presented everything demuxed (WAIT/still). */
 bool    dv_clock_drained(const dv_clock_t *c);

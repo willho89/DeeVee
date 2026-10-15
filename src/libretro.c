@@ -43,7 +43,9 @@ static bool      g_prev_a;
 /* What the frontend currently believes. */
 static struct retro_system_av_info g_av;
 
-static int16_t  g_silence[2 * 2048];
+/* One tick of audio: 48000/50 = 960 frames max; headroom for odd rates. */
+#define DV_AUDIO_MAX_TICK 2048
+static int16_t  g_audio_buf[2 * DV_AUDIO_MAX_TICK];
 static double   g_audio_accum;
 
 /* ---- logging ---------------------------------------------------------- */
@@ -179,20 +181,18 @@ RETRO_API void retro_reset(void)
    /* TODO(M4): dvdnav_menu_call(DVD_MENU_Root) / restart First Play PGC. */
 }
 
-static void output_silence(void)
+static void output_audio(dv_ctx_t *ctx)
 {
    /* Fractional accumulation so 48000/59.94 = 800.8 averages out exactly. */
    size_t frames;
    g_audio_accum += DV_SAMPLE_RATE / g_av.timing.fps;
    frames = (size_t)g_audio_accum;
    g_audio_accum -= (double)frames;
+   if (frames > DV_AUDIO_MAX_TICK)
+      frames = DV_AUDIO_MAX_TICK;
 
-   while (frames)
-   {
-      size_t n = frames > 2048 ? 2048 : frames;
-      audio_batch_cb(g_silence, n);
-      frames -= n;
-   }
+   dv_audio_render(ctx, g_audio_buf, frames);
+   audio_batch_cb(g_audio_buf, frames);
 }
 
 static void poll_input(dv_ctx_t *ctx)
@@ -233,7 +233,7 @@ RETRO_API void retro_run(void)
       video_cb(g_can_dupe && r->valid ? NULL : r->buf, r->width, r->height,
                r->width * sizeof(uint32_t));
 
-   output_silence();
+   output_audio(ctx);
 }
 
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
@@ -272,12 +272,13 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    dv_source_setup_css_env(g_ctx);
    dv_clock_init(&g_ctx->clock, DV_FPS_NTSC);
 
-   if (!dv_video_init(g_ctx) || !dv_render_init(g_ctx) ||
+   if (!dv_video_init(g_ctx) || !dv_render_init(g_ctx) || !dv_audio_init(g_ctx) ||
        !dv_source_resolve(g_ctx, game->path, &g_ctx->source) ||
        !dv_nav_open(g_ctx, &g_ctx->source))
    {
       dv_video_free(g_ctx);
       dv_render_free(g_ctx);
+      dv_audio_free(g_ctx);
       free(g_ctx);
       g_ctx = NULL;
       return false;
@@ -288,7 +289,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    /* Prime: decode up to the first picture so the first av_info is right. */
    dv_nav_fill(g_ctx, DV_PRIME_BLOCKS);
    default_av_info(&g_av);
-   if (dv_video_queued(&g_ctx->video))
+   dv_video_decode_ahead(g_ctx);
+   if (g_ctx->video.qcount)
    {
       const dv_vframe_t *first = &g_ctx->video.queue[g_ctx->video.qhead];
       if (dv_render_frame(g_ctx, first->frame))
@@ -336,9 +338,19 @@ RETRO_API void retro_unload_game(void)
              v->cadence[1], v->cadence[2], v->cadence[3], v->cadence[4],
              v->cadence[5] + v->cadence[6] + v->cadence[7]);
    }
+   {
+      const dv_audio_t *a = &g_ctx->audio;
+      dv_log(g_ctx, RETRO_LOG_INFO,
+             "Audio: packets %u, blocks %u, decoder opens %u, errors %u, overflow %u, segments %u (unconfirmed PTS %u); "
+             "out %llu, silence %llu, dropped %llu, input gaps %llu (frames)\n",
+             a->packets, a->decoded_blocks, a->reopen, a->errors, a->overflow, a->segments, a->suspect,
+             (unsigned long long)a->out_frames, (unsigned long long)a->silence_frames,
+             (unsigned long long)a->dropped_frames, (unsigned long long)a->gap_frames);
+   }
    dv_nav_close(g_ctx);
    dv_video_free(g_ctx);
    dv_render_free(g_ctx);
+   dv_audio_free(g_ctx);
    free(g_ctx);
    g_ctx = NULL;
 }

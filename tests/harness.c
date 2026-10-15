@@ -16,6 +16,10 @@
  *   HARNESS_DUMP=<dir>              write PPM snapshots there...
  *   HARNESS_DUMP_FRAMES="60,600"    ...at these frame numbers (default: 60)
  *   HARNESS_DUMP_EVERY=<n>          ...or every n frames
+ *   HARNESS_AVSYNC=1                measure A/V offset on the avs_* fixtures:
+ *                                   white-flash onsets (video) vs beep onsets
+ *                                   (audio), timed on the audio sample clock
+ *   HARNESS_WAV=<file>              write the audio output as a WAV
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
@@ -39,6 +43,133 @@ static unsigned g_geom_changes, g_av_changes;
 /* last non-dupe frame, for dumps */
 static uint32_t *g_last;
 static size_t    g_last_pitch;
+
+/* A/V sync analysis */
+#define MAX_SYNC 4096
+static double   g_vflash[MAX_SYNC], g_abeep[MAX_SYNC];
+static unsigned g_nvflash, g_nabeep;
+static bool     g_flash_on;
+static uint64_t g_quiet_run = 1000000;
+static FILE    *g_wav;
+static int16_t  g_prev_l, g_prev_r;
+static unsigned g_clicks, g_max_step;
+static double   g_first_click = -1;
+
+static void avsync_video(const void *data, unsigned w, unsigned h, size_t pitch)
+{
+   /* Mean of a 5x5 grid of pixels: flash frames are white, others black. */
+   unsigned x, y, sum = 0;
+   bool on;
+   if (!getenv("HARNESS_AVSYNC"))
+      return;
+   if (data)
+   {
+      for (y = 1; y <= 5; y++)
+         for (x = 1; x <= 5; x++)
+         {
+            uint32_t p = ((const uint32_t *)((const uint8_t *)data + (h * y / 6) * pitch))[w * x / 6];
+            sum += (p >> 8) & 0xFF;
+         }
+      on = sum / 25 > 128;
+      if (on && !g_flash_on && g_nvflash < MAX_SYNC)
+         g_vflash[g_nvflash++] = g_audio_frames / 48000.0;
+      g_flash_on = on;
+   }
+}
+
+static void avsync_audio(const int16_t *data, size_t frames)
+{
+   size_t i;
+   if (!getenv("HARNESS_AVSYNC"))
+      return;
+   for (i = 0; i < frames; i++)
+   {
+      int amp = abs(data[2 * i]) + abs(data[2 * i + 1]);
+      /* Clicks: a 1 kHz tone at amplitude A moves <= ~0.13 A per sample at
+       * 48 kHz, so a bigger step is a waveform discontinuity. */
+      int step = abs(data[2 * i] - g_prev_l) + abs(data[2 * i + 1] - g_prev_r);
+      if ((unsigned)step > g_max_step)
+         g_max_step = (unsigned)step;
+      if (step > 2500)
+      {
+         if (g_first_click < 0)
+            g_first_click = (g_audio_frames + i) / 48000.0;
+         if (atoi(getenv("HARNESS_AVSYNC")) >= 2)
+            printf("  click at %.4f s (step %d)\n", (g_audio_frames + i) / 48000.0, step);
+         g_clicks++;
+      }
+      g_prev_l = data[2 * i];
+      g_prev_r = data[2 * i + 1];
+      if (amp > 1500)
+      {
+         /* onset = loud after >= 200 ms of quiet */
+         if (g_quiet_run >= 9600 && g_nabeep < MAX_SYNC)
+            g_abeep[g_nabeep++] = (g_audio_frames + i) / 48000.0;
+         g_quiet_run = 0;
+      }
+      else
+         g_quiet_run++;
+   }
+}
+
+static void avsync_report(void)
+{
+   unsigned i, j, matched = 0;
+   double sum = 0, mn = 1e9, mx = -1e9;
+   if (!getenv("HARNESS_AVSYNC"))
+      return;
+   for (i = 0; i < g_nvflash; i++)
+   {
+      double best = 1e9;
+      for (j = 0; j < g_nabeep; j++)
+      {
+         double d = g_abeep[j] - g_vflash[i];
+         if (d * d < best * best)
+            best = d;
+      }
+      if (best > -0.5 && best < 0.5)
+      {
+         if (atoi(getenv("HARNESS_AVSYNC")) >= 2)
+            printf("  flash %8.4f s  offset %+6.1f ms\n", g_vflash[i], 1000 * best);
+         matched++;
+         sum += best;
+         if (best < mn) mn = best;
+         if (best > mx) mx = best;
+      }
+   }
+   printf("avsync: flashes %u, beeps %u, matched %u; audio-video offset ms: mean %+.1f min %+.1f max %+.1f\n",
+          g_nvflash, g_nabeep, matched, matched ? 1000 * sum / matched : 0,
+          matched ? 1000 * mn : 0, matched ? 1000 * mx : 0);
+   printf("avsync: clicks %u (max step %u, first at %.3f s)\n", g_clicks, g_max_step, g_first_click);
+}
+
+static void wav_open(const char *path)
+{
+   static const uint8_t hdr[44] = { 'R','I','F','F', 0,0,0,0, 'W','A','V','E',
+      'f','m','t',' ', 16,0,0,0, 1,0, 2,0, 0x80,0xBB,0,0, 0x00,0xEE,0x02,0, 4,0, 16,0,
+      'd','a','t','a', 0,0,0,0 };
+   if (!path || !(g_wav = fopen(path, "wb")))
+      return;
+   fwrite(hdr, 1, sizeof(hdr), g_wav);
+}
+
+static void wav_close(void)
+{
+   long size;
+   uint8_t b[4];
+   if (!g_wav)
+      return;
+   size = ftell(g_wav);
+   fseek(g_wav, 4, SEEK_SET);
+   b[0] = (uint8_t)(size - 8); b[1] = (uint8_t)((size - 8) >> 8);
+   b[2] = (uint8_t)((size - 8) >> 16); b[3] = (uint8_t)((size - 8) >> 24);
+   fwrite(b, 1, 4, g_wav);
+   fseek(g_wav, 40, SEEK_SET);
+   b[0] = (uint8_t)(size - 44); b[1] = (uint8_t)((size - 44) >> 8);
+   b[2] = (uint8_t)((size - 44) >> 16); b[3] = (uint8_t)((size - 44) >> 24);
+   fwrite(b, 1, 4, g_wav);
+   fclose(g_wav);
+}
 
 #define MAX_EVENTS 256
 static struct { unsigned frame; unsigned id; } g_input[MAX_EVENTS];
@@ -178,6 +309,7 @@ static void h_video(const void *data, unsigned w, unsigned h, size_t pitch)
 {
    unsigned y;
    g_video_frames++;
+   avsync_video(data, w, h, pitch);
    if (!data)
    {
       g_dupes++;
@@ -204,6 +336,9 @@ static void h_video(const void *data, unsigned w, unsigned h, size_t pitch)
 
 static size_t h_audio_batch(const int16_t *data, size_t frames)
 {
+   avsync_audio(data, frames);
+   if (g_wav)
+      fwrite(data, sizeof(int16_t) * 2, frames, g_wav);
    g_audio_frames += frames;
    return frames;
 }
@@ -297,6 +432,7 @@ int main(int argc, char **argv)
           av.geometry.aspect_ratio, av.timing.fps, av.timing.sample_rate);
 
    parse_input(getenv("HARNESS_INPUT"));
+   wav_open(getenv("HARNESS_WAV"));
    for (i = 0; i < frames; i++)
    {
       g_frame_no = i;
@@ -309,6 +445,8 @@ int main(int argc, char **argv)
    p_retro_deinit();
    dlclose(lib);
 
+   wav_close();
+   avsync_report();
    printf("geometry changes %u, av_info changes %u\n", g_geom_changes, g_av_changes);
    printf("frames: %u (dupes %u) last %ux%u video_hash %016llx audio_frames %llu (expected %.0f)\n",
           g_video_frames, g_dupes, g_width, g_height,

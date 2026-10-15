@@ -97,13 +97,15 @@ $(HARNESS): tests/harness.c
 
 harness: $(HARNESS)
 
-$(FIXTURE_DIR)/ntsc43.iso $(FIXTURE_DIR)/pal169.iso &: tests/fixtures/make_fixture.sh
+FIXTURES := $(addprefix $(FIXTURE_DIR)/,ntsc43.iso pal169.iso avs_ac3.iso avs_lpcm.iso avs_mp2.iso avs_dts.iso)
+
+$(FIXTURES) &: tests/fixtures/make_fixture.sh
 	tests/fixtures/make_fixture.sh $(FIXTURE_DIR)
 
-fixture: $(FIXTURE_DIR)/ntsc43.iso
+fixture: $(FIXTURES)
 
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
-check: $(TARGET) $(HARNESS) $(FIXTURE_DIR)/ntsc43.iso $(FIXTURE_DIR)/pal169.iso
+check: $(TARGET) $(HARNESS) $(FIXTURES)
 	@mkdir -p $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system

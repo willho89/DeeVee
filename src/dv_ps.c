@@ -108,17 +108,17 @@ static void route(dv_ctx_t *ctx, unsigned id, const uint8_t *data, size_t len, i
 {
    int64_t tl = dv_clock_to_timeline(&ctx->clock, pts);
 
-   if (id == DV_PS_ID_VIDEO || DV_PS_IS_MPA(id) || DV_PS_IS_AC3(id) ||
-       DV_PS_IS_DTS(id) || DV_PS_IS_LPCM(id))
-      dv_clock_demuxed(&ctx->clock, tl);
-
    if (id == DV_PS_ID_VIDEO)
    {
+      dv_clock_demuxed_video(&ctx->clock, tl);
       ctx->ps_stats.video_pes++;
       dv_video_push(ctx, data, len, tl);
    }
    else if (DV_PS_IS_MPA(id) || DV_PS_IS_AC3(id) || DV_PS_IS_DTS(id) || DV_PS_IS_LPCM(id))
-      ctx->ps_stats.audio_pes++;   /* TODO(M2): dv_audio */
+   {
+      ctx->ps_stats.audio_pes++;
+      dv_audio_push(ctx, id, data, len, tl);
+   }
    else if (DV_PS_IS_SPU(id))
       ctx->ps_stats.spu_pes++;     /* TODO(M3): dv_spu */
    else
@@ -179,11 +179,14 @@ void dv_ps_demux(dv_ctx_t *ctx, const uint8_t *p, size_t len)
                if (plen < 1)
                   break;
                id = 0xBD00 | payload[0];
-               /* Substream header sizes: ps.h ps_track_fill(). */
-               if (DV_PS_IS_AC3(id) || DV_PS_IS_DTS(id))
-                  skip = 4;  /* id, frame count, first access unit ptr (2) */
+               /* Substream headers: id, frame count, first access unit
+                * pointer (2) for audio (VLC ps.h ps_track_fill(); FFmpeg
+                * mpeg.c). LPCM's own 3-byte header stays: pcm_dvd parses it.
+                * SPU: id only. */
+               if (DV_PS_IS_AC3(id) || DV_PS_IS_DTS(id) || DV_PS_IS_LPCM(id))
+                  skip = 4;
                else
-                  skip = 1;  /* SPU; LPCM keeps its header for the decoder */
+                  skip = 1;
                if (plen < skip)
                   break;
                payload += skip;

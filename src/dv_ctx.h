@@ -19,8 +19,9 @@
 #include "dv_ps.h"
 #include "dv_video.h"
 #include "dv_render.h"
+#include "dv_audio.h"
 
-#define DV_VERSION "0.2.0"
+#define DV_VERSION "0.3.0"
 
 #ifndef DEEVEE_CSS_MODE
 #define DEEVEE_CSS_MODE "unknown"
@@ -40,6 +41,7 @@ typedef struct dv_ctx
    dv_ps_stats_t ps_stats;
    dv_video_t    video;
    dv_render_t   render;
+   dv_audio_t    audio;
 } dv_ctx_t;
 
 void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)

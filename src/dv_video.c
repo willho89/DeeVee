@@ -5,7 +5,8 @@
  *
  * MPEG-1/2 video decode (CLAUDE.md §5.4). libavcodec's mpeg2video decoder
  * (handles MPEG-1 too) behind the mpegvideo parser, which splits PES payloads
- * into whole pictures and carries PTS across.
+ * into whole pictures and carries PTS across. Parsed pictures wait in a
+ * compressed FIFO and are decoded only when presentation needs them.
  */
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
@@ -16,6 +17,8 @@
 /* Pictures more than this far from the clock mean a discontinuity we failed
  * to model (or a jump): re-anchor instead of racing/holding. */
 #define DV_RESYNC_THRESHOLD (90000 * 2)
+/* Decoded pictures kept ready beyond the one on screen. */
+#define DV_DECODE_AHEAD     3
 
 static bool open_parser(dv_video_t *v)
 {
@@ -46,9 +49,8 @@ bool dv_video_init(dv_ctx_t *ctx)
       dv_log(ctx, RETRO_LOG_ERROR, "Failed to open MPEG video decoder.\n");
       return false;
    }
-   v->pkt = av_packet_alloc();
    v->tmp = av_frame_alloc();
-   return v->pkt && v->tmp;
+   return v->tmp != NULL;
 }
 
 static void clear_queue(dv_video_t *v)
@@ -62,24 +64,28 @@ static void clear_queue(dv_video_t *v)
    v->qhead = 0;
 }
 
+static void clear_fifo(dv_video_t *v)
+{
+   while (v->fcount)
+   {
+      av_packet_free(&v->fifo[v->fhead]);
+      v->fhead = (v->fhead + 1) % DV_VIDEO_FIFO_MAX;
+      v->fcount--;
+   }
+   v->fhead = 0;
+}
+
 void dv_video_free(dv_ctx_t *ctx)
 {
    dv_video_t *v = &ctx->video;
+   clear_fifo(v);
    clear_queue(v);
    av_frame_free(&v->current.frame);
    av_frame_free(&v->tmp);
-   av_packet_free(&v->pkt);
    if (v->parser)
       av_parser_close(v->parser);
    v->parser = NULL;
    avcodec_free_context(&v->avctx);
-}
-
-int64_t dv_video_tail_pts(const dv_video_t *v)
-{
-   if (!v->qcount)
-      return DV_NOPTS;
-   return v->queue[(v->qhead + v->qcount - 1) % DV_VIDEO_QUEUE_MAX].pts;
 }
 
 /* Frame period in 90 kHz ticks, honouring repeat_pict: RFF on a 29.97
@@ -93,6 +99,98 @@ static int64_t frame_duration(const dv_video_t *v, const AVFrame *f)
       : 3003;
    return period * (2 + f->repeat_pict) / 2;
 }
+
+/* ---- FIFO (compressed) ------------------------------------------------ */
+
+static void fifo_push(dv_ctx_t *ctx, const uint8_t *data, int size, int64_t pts, int64_t dts)
+{
+   dv_video_t *v = &ctx->video;
+   AVPacket *pkt;
+
+   if (v->fcount == DV_VIDEO_FIFO_MAX)
+   {
+      /* Shouldn't happen: reading stops at dv_video_fifo_full(). */
+      av_packet_free(&v->fifo[v->fhead]);
+      v->fhead = (v->fhead + 1) % DV_VIDEO_FIFO_MAX;
+      v->fcount--;
+      v->fifo_overflow++;
+   }
+
+   pkt = av_packet_alloc();
+   if (!pkt || av_new_packet(pkt, size) < 0)
+   {
+      av_packet_free(&pkt);
+      v->errors++;
+      return;
+   }
+   memcpy(pkt->data, data, (size_t)size);
+   pkt->pts = pts;
+   pkt->dts = dts;
+   v->fifo[(v->fhead + v->fcount) % DV_VIDEO_FIFO_MAX] = pkt;
+   v->fcount++;
+}
+
+void dv_video_push(dv_ctx_t *ctx, const uint8_t *data, size_t len, int64_t pts)
+{
+   dv_video_t *v = &ctx->video;
+   int64_t in_pts = pts == DV_NOPTS ? AV_NOPTS_VALUE : pts;
+
+   while (len > 0)
+   {
+      uint8_t *out = NULL;
+      int out_size = 0;
+      int used = av_parser_parse2(v->parser, v->avctx, &out, &out_size,
+                                  data, (int)len, in_pts, AV_NOPTS_VALUE, 0);
+      if (used < 0)
+      {
+         v->errors++;
+         return;
+      }
+      data += used;
+      len  -= (size_t)used;
+      in_pts = AV_NOPTS_VALUE;  /* PTS belongs to the first picture only */
+
+      if (out_size > 0)
+         fifo_push(ctx, out, out_size, v->parser->pts, v->parser->dts);
+   }
+}
+
+void dv_video_force_still(dv_ctx_t *ctx)
+{
+   static const uint8_t seq_end[4] = { 0x00, 0x00, 0x01, 0xB7 };
+   dv_video_t *v = &ctx->video;
+   uint8_t *out = NULL;
+   int out_size = 0;
+
+   /* 1. Flush the parser's buffered picture (it only emits a picture once
+    *    the next one starts). The parser is recreated afterwards because an
+    *    EOF flush leaves it in an end-of-stream state. */
+   av_parser_parse2(v->parser, v->avctx, &out, &out_size, NULL, 0,
+                    AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+   if (out_size > 0)
+      fifo_push(ctx, out, out_size, v->parser->pts, v->parser->dts);
+   av_parser_close(v->parser);
+   open_parser(v);
+
+   /* 2. A lone sequence_end_code makes mpeg12dec output its delayed
+    *    reference picture without entering EOF (mpeg12dec.c "special case
+    *    for last picture"). Same trick as VLC's DemuxForceStill(). Queued in
+    *    order, so it takes effect after the pictures before it. */
+   fifo_push(ctx, seq_end, sizeof(seq_end), AV_NOPTS_VALUE, AV_NOPTS_VALUE);
+}
+
+void dv_video_flush(dv_ctx_t *ctx)
+{
+   dv_video_t *v = &ctx->video;
+   avcodec_flush_buffers(v->avctx);
+   av_parser_close(v->parser);
+   open_parser(v);
+   clear_fifo(v);
+   clear_queue(v);
+   v->next_pts = DV_NOPTS;
+}
+
+/* ---- decode ----------------------------------------------------------- */
 
 static void enqueue(dv_ctx_t *ctx, AVFrame *src)
 {
@@ -112,7 +210,6 @@ static void enqueue(dv_ctx_t *ctx, AVFrame *src)
 
    if (v->qcount == DV_VIDEO_QUEUE_MAX)
    {
-      /* Shouldn't happen (the nav pump stops well short); drop oldest. */
       av_frame_free(&v->queue[v->qhead].frame);
       v->qhead = (v->qhead + 1) % DV_VIDEO_QUEUE_MAX;
       v->qcount--;
@@ -140,84 +237,52 @@ static void receive_all(dv_ctx_t *ctx)
    }
 }
 
-static void send_packet(dv_ctx_t *ctx, const uint8_t *data, int size, int64_t pts, int64_t dts)
+static void decode_one(dv_ctx_t *ctx)
 {
    dv_video_t *v = &ctx->video;
+   AVPacket *pkt = v->fifo[v->fhead];
    int ret;
 
-   v->pkt->data = (uint8_t *)data;
-   v->pkt->size = size;
-   v->pkt->pts  = pts;
-   v->pkt->dts  = dts;
+   v->fifo[v->fhead] = NULL;
+   v->fhead = (v->fhead + 1) % DV_VIDEO_FIFO_MAX;
+   v->fcount--;
 
-   ret = avcodec_send_packet(v->avctx, v->pkt);
+   ret = avcodec_send_packet(v->avctx, pkt);
    if (ret == AVERROR(EAGAIN))
    {
       receive_all(ctx);
-      ret = avcodec_send_packet(v->avctx, v->pkt);
+      ret = avcodec_send_packet(v->avctx, pkt);
    }
    if (ret < 0 && ret != AVERROR_INVALIDDATA)
       v->errors++;
    receive_all(ctx);
+   av_packet_free(&pkt);
 }
 
-void dv_video_push(dv_ctx_t *ctx, const uint8_t *data, size_t len, int64_t pts)
+static int64_t queue_tail_pts(const dv_video_t *v)
+{
+   return v->queue[(v->qhead + v->qcount - 1) % DV_VIDEO_QUEUE_MAX].pts;
+}
+
+void dv_video_decode_ahead(dv_ctx_t *ctx)
 {
    dv_video_t *v = &ctx->video;
-   int64_t in_pts = pts == DV_NOPTS ? AV_NOPTS_VALUE : pts;
+   const dv_clock_t *c = &ctx->clock;
 
-   while (len > 0)
+   while (v->fcount && v->qcount < DV_VIDEO_QUEUE_MAX - 2)
    {
-      uint8_t *out = NULL;
-      int out_size = 0;
-      int used = av_parser_parse2(v->parser, v->avctx, &out, &out_size,
-                                  data, (int)len, in_pts, AV_NOPTS_VALUE, 0);
-      if (used < 0)
+      if (v->qcount)
       {
-         v->errors++;
-         return;
+         if (!c->anchored)
+            break;  /* one picture is enough to anchor on */
+         if (v->qcount >= DV_DECODE_AHEAD && queue_tail_pts(v) > c->now + c->tick)
+            break;
       }
-      data += used;
-      len  -= (size_t)used;
-      in_pts = AV_NOPTS_VALUE;  /* PTS belongs to the first picture only */
-
-      if (out_size > 0)
-         send_packet(ctx, out, out_size, v->parser->pts, v->parser->dts);
+      decode_one(ctx);
    }
 }
 
-void dv_video_force_still(dv_ctx_t *ctx)
-{
-   static const uint8_t seq_end[4] = { 0x00, 0x00, 0x01, 0xB7 };
-   dv_video_t *v = &ctx->video;
-   uint8_t *out = NULL;
-   int out_size = 0;
-
-   /* 1. Flush the parser's buffered picture (it only emits a picture once
-    *    the next one starts). The parser is recreated afterwards because an
-    *    EOF flush leaves it in an end-of-stream state. */
-   av_parser_parse2(v->parser, v->avctx, &out, &out_size, NULL, 0,
-                    AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-   if (out_size > 0)
-      send_packet(ctx, out, out_size, v->parser->pts, v->parser->dts);
-   av_parser_close(v->parser);
-   open_parser(v);
-
-   /* 2. A lone sequence_end_code makes mpeg12dec output its delayed
-    *    reference picture without entering EOF (mpeg12dec.c "special case
-    *    for last picture"). Same trick as VLC's DemuxForceStill(). */
-   send_packet(ctx, seq_end, sizeof(seq_end), AV_NOPTS_VALUE, AV_NOPTS_VALUE);
-}
-
-void dv_video_flush(dv_ctx_t *ctx)
-{
-   dv_video_t *v = &ctx->video;
-   avcodec_flush_buffers(v->avctx);
-   av_parser_close(v->parser);
-   open_parser(v);
-   clear_queue(v);
-   v->next_pts = DV_NOPTS;
-}
+/* ---- presentation ----------------------------------------------------- */
 
 static void pop_into_current(dv_video_t *v)
 {
@@ -256,6 +321,8 @@ void dv_video_present(dv_ctx_t *ctx)
    dv_video_t *v = &ctx->video;
    dv_clock_t *c = &ctx->clock;
 
+   dv_video_decode_ahead(ctx);
+
    while (v->qcount)
    {
       const dv_vframe_t *head = &v->queue[v->qhead];
@@ -282,6 +349,7 @@ void dv_video_present(dv_ctx_t *ctx)
          v->qhead = (v->qhead + 1) % DV_VIDEO_QUEUE_MAX;
          v->qcount--;
          v->dropped++;
+         dv_video_decode_ahead(ctx);
          continue;
       }
 

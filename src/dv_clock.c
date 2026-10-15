@@ -25,6 +25,8 @@ void dv_clock_init(dv_clock_t *c, double fps)
    c->prev_e_ptm = 0;
    c->have_prev  = false;
    c->demux_max  = DV_NOPTS;
+   c->video_max  = DV_NOPTS;
+   c->audio_max  = DV_NOPTS;
    dv_clock_set_fps(c, fps);
 }
 
@@ -53,6 +55,10 @@ void dv_clock_anchor(dv_clock_t *c, int64_t timeline)
     * until the clock caught up with it. */
    if (c->demux_max != DV_NOPTS && c->demux_max > timeline + DV_CLOCK_MAX_LEAD)
       c->demux_max = DV_NOPTS;
+   if (c->video_max != DV_NOPTS && c->video_max > timeline + DV_CLOCK_MAX_LEAD)
+      c->video_max = DV_NOPTS;
+   if (c->audio_max != DV_NOPTS && c->audio_max > timeline + DV_CLOCK_MAX_LEAD)
+      c->audio_max = DV_NOPTS;
 }
 
 bool dv_clock_vobu(dv_clock_t *c, uint32_t s_ptm, uint32_t e_ptm)
@@ -82,16 +88,22 @@ int64_t dv_clock_to_timeline(const dv_clock_t *c, int64_t pts)
    return pts == DV_NOPTS ? DV_NOPTS : pts + c->offset;
 }
 
-void dv_clock_demuxed(dv_clock_t *c, int64_t tl)
+static void raise_max(int64_t *max, int64_t tl)
 {
-   if (tl != DV_NOPTS && (c->demux_max == DV_NOPTS || tl > c->demux_max))
-      c->demux_max = tl;
+   if (tl != DV_NOPTS && (*max == DV_NOPTS || tl > *max))
+      *max = tl;
 }
 
-bool dv_clock_buffered_ahead(const dv_clock_t *c, double lead)
+void dv_clock_demuxed_video(dv_clock_t *c, int64_t tl)
 {
-   return c->anchored && c->demux_max != DV_NOPTS &&
-          (double)c->demux_max > c->now + lead;
+   raise_max(&c->video_max, tl);
+   raise_max(&c->demux_max, tl);
+}
+
+void dv_clock_demuxed_audio(dv_clock_t *c, int64_t tl)
+{
+   raise_max(&c->audio_max, tl);
+   raise_max(&c->demux_max, tl);
 }
 
 bool dv_clock_drained(const dv_clock_t *c)
