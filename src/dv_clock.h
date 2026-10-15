@@ -42,6 +42,9 @@ void    dv_clock_anchor(dv_clock_t *c, int64_t timeline);
  * Returns true if the offset changed. */
 bool    dv_clock_vobu(dv_clock_t *c, uint32_t vobu_s_ptm, uint32_t vobu_e_ptm);
 
+/* User jump: everything queued was dropped; forget horizons, re-anchor. */
+void    dv_clock_flush(dv_clock_t *c);
+
 /* After HOP_CHANNEL: re-anchor, keeping VOBU continuity. */
 void    dv_clock_hop(dv_clock_t *c);
 

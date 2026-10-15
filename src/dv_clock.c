@@ -83,6 +83,12 @@ void dv_clock_hop(dv_clock_t *c)
    c->anchored = false;
 }
 
+void dv_clock_flush(dv_clock_t *c)
+{
+   c->anchored  = false;
+   c->demux_max = c->video_max = c->audio_max = DV_NOPTS;
+}
+
 int64_t dv_clock_to_timeline(const dv_clock_t *c, int64_t pts)
 {
    return pts == DV_NOPTS ? DV_NOPTS : pts + c->offset;

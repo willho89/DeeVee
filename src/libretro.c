@@ -38,7 +38,6 @@ static retro_log_printf_t         log_cb;
 
 static dv_ctx_t *g_ctx;
 static bool      g_can_dupe;
-static bool      g_prev_a;
 
 /* What the frontend currently believes. */
 static struct retro_system_av_info g_av;
@@ -294,23 +293,13 @@ static void output_audio(dv_ctx_t *ctx)
    audio_batch_cb(g_audio_buf, frames);
 }
 
-static void poll_input(dv_ctx_t *ctx)
-{
-   /* Temporary M1 binding: A = activate menu button / skip still (M4 does
-    * the full §5.9 mapping). */
-   bool a = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A) != 0;
-   if (a && !g_prev_a)
-      dv_nav_activate(ctx);
-   g_prev_a = a;
-}
-
 RETRO_API void retro_run(void)
 {
    dv_ctx_t *ctx = g_ctx;
    dv_render_t *r = &ctx->render;
 
    input_poll_cb();
-   poll_input(ctx);
+   dv_input_run(ctx);
 
    {
       bool updated = false;
@@ -323,6 +312,7 @@ RETRO_API void retro_run(void)
    dv_nav_fill(ctx, DV_BLOCKS_PER_RUN);
    dv_video_present(ctx);
    dv_nav_service(ctx);
+   dv_nav_update_highlight(ctx);
 
    {
       const dv_subpic_t *sp = dv_spu_update(ctx);
@@ -344,7 +334,8 @@ RETRO_API void retro_run(void)
          const uint32_t *frame = r->buf;
          if (sp)
          {
-            dv_overlay_compose(ctx, r->buf, g_composite, r->width, r->height, sp, NULL);
+            dv_overlay_compose(ctx, r->buf, g_composite, r->width, r->height, sp,
+                               &ctx->highlight);
             frame = g_composite;
          }
          video_cb(frame, r->width, r->height, r->width * sizeof(uint32_t));
@@ -390,6 +381,9 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    g_can_dupe = false;
    environ_cb(RETRO_ENVIRONMENT_GET_CAN_DUPE, &g_can_dupe);
+   dv_input_init(g_ctx, input_state_cb,
+                 environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL));
+   dv_input_set_descriptors(environ_cb);
 
    read_options(g_ctx);
    dv_source_setup_css_env(g_ctx);
@@ -435,7 +429,6 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
           g_av.geometry.aspect_ratio, g_av.timing.fps);
 
    g_audio_accum = 0.0;
-   g_prev_a      = false;
    return true;
 }
 

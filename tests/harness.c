@@ -20,6 +20,10 @@
  *                                   white-flash onsets (video) vs beep onsets
  *                                   (audio), timed on the audio sample clock
  *   HARNESS_WAV=<file>              write the audio output as a WAV
+ *   HARNESS_POINTER="300:400,350,600:400,350:press"
+ *                                   pointer at frame:x,y (stored-frame
+ *                                   pixels, 720x480); ":press" holds the
+ *                                   button for 2 frames
  *   HARNESS_OPT_<key>=<value>       core option value, e.g.
  *                                   HARNESS_OPT_deevee_subtitles=on
  */
@@ -187,6 +191,51 @@ static const struct { const char *name; unsigned id; } g_buttons[] = {
    { "UP", RETRO_DEVICE_ID_JOYPAD_UP }, { "DOWN", RETRO_DEVICE_ID_JOYPAD_DOWN },
    { "LEFT", RETRO_DEVICE_ID_JOYPAD_LEFT }, { "RIGHT", RETRO_DEVICE_ID_JOYPAD_RIGHT },
 };
+
+static struct { unsigned frame; int x, y; bool press; } g_ptr[MAX_EVENTS];
+static unsigned g_nptr;
+
+static void parse_pointer(const char *spec)
+{
+   char buf[4096], *tok, *save = NULL;
+   if (!spec)
+      return;
+   snprintf(buf, sizeof(buf), "%s", spec);
+   for (tok = strtok_r(buf, ",", &save); tok && g_nptr < MAX_EVENTS;
+        tok = strtok_r(NULL, ",", &save))
+   {
+      /* tokens come in pairs: "frame:x" then "y[:press]" */
+      char *y = strtok_r(NULL, ",", &save);
+      char *colon = strchr(tok, ':');
+      if (!colon || !y)
+         break;
+      g_ptr[g_nptr].frame = (unsigned)atoi(tok);
+      g_ptr[g_nptr].x     = atoi(colon + 1);
+      g_ptr[g_nptr].y     = atoi(y);
+      g_ptr[g_nptr].press = strstr(y, "press") != NULL;
+      g_nptr++;
+   }
+}
+
+static int16_t pointer_state(unsigned id)
+{
+   int i, cur = -1;
+   for (i = 0; i < (int)g_nptr; i++)
+      if (g_ptr[i].frame <= g_frame_no)
+         cur = i;
+   if (cur < 0)
+      return 0;
+   switch (id)
+   {
+      case RETRO_DEVICE_ID_POINTER_X:
+         return (int16_t)(g_ptr[cur].x * 0xfffe / 720 - 0x7fff);
+      case RETRO_DEVICE_ID_POINTER_Y:
+         return (int16_t)(g_ptr[cur].y * 0xfffe / 480 - 0x7fff);
+      case RETRO_DEVICE_ID_POINTER_PRESSED:
+         return g_ptr[cur].press && g_frame_no < g_ptr[cur].frame + 2;
+   }
+   return 0;
+}
 
 static void parse_input(const char *spec)
 {
@@ -363,6 +412,8 @@ static void h_poll(void) { }
 static int16_t h_input(unsigned port, unsigned dev, unsigned idx, unsigned id)
 {
    unsigned i;
+   if (port == 0 && dev == RETRO_DEVICE_POINTER && idx == 0)
+      return pointer_state(id);
    if (port != 0 || dev != RETRO_DEVICE_JOYPAD)
       return 0;
    for (i = 0; i < g_ninput; i++)
@@ -447,6 +498,7 @@ int main(int argc, char **argv)
           av.geometry.aspect_ratio, av.timing.fps, av.timing.sample_rate);
 
    parse_input(getenv("HARNESS_INPUT"));
+   parse_pointer(getenv("HARNESS_POINTER"));
    wav_open(getenv("HARNESS_WAV"));
    for (i = 0; i < frames; i++)
    {

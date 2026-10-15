@@ -22,8 +22,9 @@
 #include "dv_audio.h"
 #include "dv_spu.h"
 #include "dv_overlay.h"
+#include "dv_input.h"
 
-#define DV_VERSION "0.4.0"
+#define DV_VERSION "0.5.0"
 
 #ifndef DEEVEE_CSS_MODE
 #define DEEVEE_CSS_MODE "unknown"
@@ -60,6 +61,8 @@ typedef struct dv_ctx
    dv_audio_t    audio;
    dv_spu_t      spu;
    dv_overlay_t  overlay;
+   dv_highlight_t highlight;    /* current menu button highlight */
+   dv_input_t    input;
    dv_options_t  opt;
 } dv_ctx_t;
 

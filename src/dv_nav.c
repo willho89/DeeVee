@@ -291,6 +291,20 @@ static void on_nav_packet(dv_ctx_t *ctx)
       }
    }
 
+   /* Remember this PCI with its presentation time (see dv_nav_presented_pci). */
+   {
+      dv_pci_slot_t *slot;
+      if (nav->pci_count == DV_PCI_QUEUE)
+      {
+         nav->pci_head = (nav->pci_head + 1) % DV_PCI_QUEUE;
+         nav->pci_count--;
+      }
+      slot = &nav->pcis[(nav->pci_head + nav->pci_count) % DV_PCI_QUEUE];
+      slot->start = dv_clock_to_timeline(&ctx->clock, pci->pci_gi.vobu_s_ptm);
+      slot->pci   = *pci;
+      nav->pci_count++;
+   }
+
    /* Ported from VLC dvdnav.c DVDNAV_NAV_PACKET: a VOBU that ends its
     * sequence early (vobu_se_e_ptm) holds a still picture mid-VOBU; force it
     * out once the last block of its reference picture has been read. */
@@ -512,32 +526,207 @@ void dv_nav_apply_subtitle_options(dv_ctx_t *ctx, bool force)
    dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
 }
 
-void dv_nav_activate(dv_ctx_t *ctx)
+/* ---- menus and input (CLAUDE.md §5.5 highlight, §5.9 input) ------------ */
+
+const pci_t *dv_nav_presented_pci(dv_ctx_t *ctx)
 {
    dv_nav_t *nav = &ctx->nav;
-   pci_t *pci;
+   const dv_clock_t *c = &ctx->clock;
+   double now = c->now + c->tick * 0.5;
+
+   if (!nav->pci_count)
+      return NULL;
+   /* Drop PCIs superseded by a later one that is already on screen. */
+   while (c->anchored && nav->pci_count >= 2 &&
+          (double)nav->pcis[(nav->pci_head + 1) % DV_PCI_QUEUE].start <= now)
+   {
+      nav->pci_head = (nav->pci_head + 1) % DV_PCI_QUEUE;
+      nav->pci_count--;
+   }
+   return &nav->pcis[nav->pci_head].pci;
+}
+
+bool dv_nav_has_buttons(dv_ctx_t *ctx)
+{
+   const pci_t *pci = dv_nav_presented_pci(ctx);
+   return pci && pci->hli.hl_gi.hli_ss != 0 && pci->hli.hl_gi.btn_ns > 0;
+}
+
+/* Ported from VLC modules/access/dvdnav.c ButtonUpdate() @ 843607a066be.
+ * Differences: uses the PCI on screen rather than the one just read, and
+ * isn't limited to menu domains (titles may carry buttons too). Rendering
+ * follows the DVD model (highlight palette inside the button rectangle,
+ * the subpicture's own palette elsewhere) rather than VLC's crop; see
+ * D-017. */
+void dv_nav_update_highlight(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   dv_highlight_t hl;
+   int32_t button = 0;
+   dvdnav_highlight_area_t area;
+   const pci_t *pci;
+
+   memset(&hl, 0, sizeof(hl));
+
+   if (nav->dvdnav && dv_nav_has_buttons(ctx) &&
+       dvdnav_get_current_highlight(nav->dvdnav, &button) == DVDNAV_STATUS_OK &&
+       button > 0)
+   {
+      pci = dv_nav_presented_pci(ctx);
+      if (dvdnav_get_highlight_area((pci_t *)pci, button, 0, &area) == DVDNAV_STATUS_OK)
+      {
+         int i;
+         hl.active = true;
+         hl.sx = (int)area.sx; hl.ex = (int)area.ex;
+         hl.sy = (int)area.sy; hl.ey = (int)area.ey;
+         for (i = 0; i < 4; i++)
+         {
+            hl.color[i] = (uint8_t)((area.palette >> (16 + 4 * i)) & 0x0F);
+            hl.alpha[i] = (uint8_t)((area.palette >> (4 * i)) & 0x0F);
+         }
+      }
+   }
+
+   if (memcmp(&hl, &ctx->highlight, sizeof(hl)))
+   {
+      if (hl.active)
+         dv_log(ctx, RETRO_LOG_DEBUG, "highlight: button %d (%d,%d)-(%d,%d)\n",
+                button, hl.sx, hl.sy, hl.ex, hl.ey);
+      ctx->highlight   = hl;
+      ctx->spu.changed = true;   /* palette swap only, no re-decode */
+   }
+}
+
+/* A user-initiated jump: up to 3 s of the old position is still queued, so
+ * drop it all and show the new content as soon as it decodes. */
+static void user_jump(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+
+   if (nav->wait)
+      dvdnav_wait_skip(nav->dvdnav);
+   nav->wait  = false;
+   nav->still = false;
+   nav->stopped = false;
+   nav->vobu_index = nav->vobu_flush = 0;
+   nav->pci_count = 0;
+
+   dv_video_flush(ctx);
+   dv_audio_flush(ctx);
+   dv_spu_clear(ctx);
+   dv_clock_flush(&ctx->clock);
+   memset(&ctx->highlight, 0, sizeof(ctx->highlight));
+}
+
+void dv_nav_button_move(dv_ctx_t *ctx, dv_button_dir_t dir)
+{
+   dv_nav_t *nav = &ctx->nav;
+   pci_t *pci = (pci_t *)dv_nav_presented_pci(ctx);
+   dvdnav_status_t st = DVDNAV_STATUS_ERR;
+   int32_t before = 0, after = 0;
+
+   if (!nav->dvdnav || !dv_nav_has_buttons(ctx))
+      return;
+   dvdnav_get_current_highlight(nav->dvdnav, &before);
+   switch (dir)
+   {
+      case DV_BTN_UP:    st = dvdnav_upper_button_select(nav->dvdnav, pci); break;
+      case DV_BTN_DOWN:  st = dvdnav_lower_button_select(nav->dvdnav, pci); break;
+      case DV_BTN_LEFT:  st = dvdnav_left_button_select(nav->dvdnav, pci);  break;
+      case DV_BTN_RIGHT: st = dvdnav_right_button_select(nav->dvdnav, pci); break;
+   }
+   dvdnav_get_current_highlight(nav->dvdnav, &after);
+   dv_log(ctx, RETRO_LOG_DEBUG, "button move %d: %d -> %d%s\n", (int)dir, before, after,
+          st == DVDNAV_STATUS_OK ? "" : " (refused)");
+   /* Auto-action buttons activate on selection inside libdvdnav: if the VM
+    * jumped, the position changed under us. */
+   if (st == DVDNAV_STATUS_OK && pci->hli.btnit[after > 0 ? after - 1 : 0].auto_action_mode)
+      user_jump(ctx);
+}
+
+static bool still_skip_if_still(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   if (!nav->still)
+      return false;
+   dvdnav_still_skip(nav->dvdnav);
+   nav->still = false;
+   dv_clock_unanchor(&ctx->clock);
+   return true;
+}
+
+void dv_nav_action(dv_ctx_t *ctx, dv_action_t act)
+{
+   dv_nav_t *nav = &ctx->nav;
+   pci_t *pci = (pci_t *)dv_nav_presented_pci(ctx);
+   dvdnav_status_t st = DVDNAV_STATUS_ERR;
+   const char *name = "";
 
    if (!nav->dvdnav)
       return;
 
-   pci = dvdnav_get_current_nav_pci(nav->dvdnav);
-   if (pci)
+   switch (act)
    {
-      int32_t btn = 0;
-      dvdnav_get_current_highlight(nav->dvdnav, &btn);
-      dv_log(ctx, RETRO_LOG_DEBUG,
-             "activate: hli_ss %u, btn_ns %u, current button %d, domain %s, still %d\n",
-             pci->hli.hl_gi.hli_ss, pci->hli.hl_gi.btn_ns, btn,
-             dvdnav_is_domain_vts(nav->dvdnav) ? "title" : "menu", nav->still);
+      case DV_ACT_ACTIVATE:
+         name = "activate";
+         if (dv_nav_has_buttons(ctx))
+            st = dvdnav_button_activate(nav->dvdnav, pci);
+         else if (still_skip_if_still(ctx))
+            return;
+         break;
+      case DV_ACT_GO_UP:
+         name = "return";
+         st = dvdnav_go_up(nav->dvdnav);
+         break;
+      case DV_ACT_ROOT_MENU:
+         name = "root menu";
+         st = dvdnav_menu_call(nav->dvdnav, DVD_MENU_Root);
+         if (st != DVDNAV_STATUS_OK)
+            st = dvdnav_menu_call(nav->dvdnav, DVD_MENU_Title);
+         break;
+      case DV_ACT_TITLE_MENU:
+         name = "title menu";
+         st = dvdnav_menu_call(nav->dvdnav, DVD_MENU_Title);
+         if (st != DVDNAV_STATUS_OK)
+            st = dvdnav_menu_call(nav->dvdnav, DVD_MENU_Root);
+         break;
+      case DV_ACT_PREV_CHAPTER:
+         name = "previous chapter";
+         if (dvdnav_is_domain_vts(nav->dvdnav))
+            st = dvdnav_prev_pg_search(nav->dvdnav);
+         break;
+      case DV_ACT_NEXT_CHAPTER:
+         name = "next chapter";
+         if (dvdnav_is_domain_vts(nav->dvdnav))
+            st = dvdnav_next_pg_search(nav->dvdnav);
+         break;
    }
-   if (pci && pci->hli.hl_gi.btn_ns > 0 &&
-       dvdnav_button_activate(nav->dvdnav, pci) == DVDNAV_STATUS_OK)
-   {
-      dv_log(ctx, RETRO_LOG_DEBUG, "button activated\n");
-      if (nav->still)
-         end_still(ctx, false);
+
+   dv_log(ctx, RETRO_LOG_DEBUG, "action %s: %s\n", name,
+          st == DVDNAV_STATUS_OK ? "ok" :
+          ((act == DV_ACT_PREV_CHAPTER || act == DV_ACT_NEXT_CHAPTER) &&
+           !dvdnav_is_domain_vts(nav->dvdnav)) ? "ignored (not in a title)" :
+          act == DV_ACT_ACTIVATE ? "no button, no still" :
+          dvdnav_err_to_string(nav->dvdnav));
+   if (st == DVDNAV_STATUS_OK)
+      user_jump(ctx);
+}
+
+void dv_nav_pointer(dv_ctx_t *ctx, int x, int y, bool activate)
+{
+   dv_nav_t *nav = &ctx->nav;
+   pci_t *pci = (pci_t *)dv_nav_presented_pci(ctx);
+
+   if (!nav->dvdnav || !dv_nav_has_buttons(ctx))
       return;
+   if (activate)
+   {
+      if (dvdnav_mouse_activate(nav->dvdnav, pci, x, y) == DVDNAV_STATUS_OK)
+      {
+         dv_log(ctx, RETRO_LOG_DEBUG, "pointer activate at %d,%d\n", x, y);
+         user_jump(ctx);
+      }
    }
-   if (nav->still)
-      end_still(ctx, true);
+   else
+      dvdnav_mouse_select(nav->dvdnav, pci, x, y);
 }

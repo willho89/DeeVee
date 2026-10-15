@@ -300,9 +300,10 @@ static void parse_packet(dv_ctx_t *ctx, const uint8_t *buf, size_t size, int64_t
       drop_front(s, 1);
    s->q[s->qcount++] = p;
    s->decoded++;
-   dv_log(ctx, RETRO_LOG_DEBUG, "spu: %dx%d at %d,%d start %lld stop %lld%s\n",
+   dv_log(ctx, RETRO_LOG_DEBUG, "spu: %dx%d at %d,%d start %lld stop %lld%s colors %X%X%X%X alpha %X%X%X%X\n",
           p.w, p.h, p.x, p.y, (long long)p.start, (long long)p.stop,
-          p.forced ? " forced" : "");
+          p.forced ? " forced" : "", p.color[3], p.color[2], p.color[1], p.color[0],
+          p.alpha[3], p.alpha[2], p.alpha[1], p.alpha[0]);
    return;
 
 fail:

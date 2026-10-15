@@ -12,9 +12,36 @@
 #include <stdint.h>
 #include <dvdnav/dvdnav.h>
 
+#include <dvdread/nav_types.h>
+
 #include "dv_source.h"
 
 struct dv_ctx;
+
+/* PCIs are read up to ~3 s ahead of presentation; keep them with their
+ * timeline start so highlights and button navigation use the one on screen. */
+#define DV_PCI_QUEUE 32
+
+typedef struct dv_pci_slot
+{
+   int64_t start;      /* timeline of vobu_s_ptm */
+   pci_t   pci;
+} dv_pci_slot_t;
+
+typedef enum
+{
+   DV_BTN_UP, DV_BTN_DOWN, DV_BTN_LEFT, DV_BTN_RIGHT
+} dv_button_dir_t;
+
+typedef enum
+{
+   DV_ACT_ACTIVATE,     /* A: activate button / skip still */
+   DV_ACT_GO_UP,        /* B: Return */
+   DV_ACT_ROOT_MENU,    /* Start */
+   DV_ACT_TITLE_MENU,   /* Select */
+   DV_ACT_PREV_CHAPTER, /* L */
+   DV_ACT_NEXT_CHAPTER  /* R */
+} dv_action_t;
 
 typedef struct dv_nav
 {
@@ -40,6 +67,9 @@ typedef struct dv_nav
 
    int32_t  policy_title;     /* title the subtitle options were last applied to */
 
+   dv_pci_slot_t pcis[DV_PCI_QUEUE];
+   int      pci_head, pci_count;
+
    bool     stopped;          /* DVDNAV_STOP seen */
    uint32_t blocks;           /* BLOCK_OK packs received (stats) */
    uint32_t stills, waits, hops, discontinuities;
@@ -62,8 +92,19 @@ void dv_nav_service(struct dv_ctx *ctx);
  * Runs once per title unless force is set (option changed). */
 void dv_nav_apply_subtitle_options(struct dv_ctx *ctx, bool force);
 
-/* User action (temporary M1 binding for A): activate the highlighted menu
- * button, else skip a still. Full input mapping is M4. */
-void dv_nav_activate(struct dv_ctx *ctx);
+/* PCI of the VOBU on screen (NULL if none yet). */
+const pci_t *dv_nav_presented_pci(struct dv_ctx *ctx);
+
+/* True when the presented VOBU has buttons (menu-style input applies). */
+bool dv_nav_has_buttons(struct dv_ctx *ctx);
+
+/* Recompute the menu highlight (port of VLC ButtonUpdate()); call per tick. */
+void dv_nav_update_highlight(struct dv_ctx *ctx);
+
+/* User input (CLAUDE.md §5.9). */
+void dv_nav_button_move(struct dv_ctx *ctx, dv_button_dir_t dir);
+void dv_nav_action(struct dv_ctx *ctx, dv_action_t act);
+/* Pointer in stored-frame coordinates (720 x 480/576). */
+void dv_nav_pointer(struct dv_ctx *ctx, int x, int y, bool activate);
 
 #endif
