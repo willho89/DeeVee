@@ -1,0 +1,6 @@
+build/
+*.so
+*.dll
+*.dylib
+*.log
+TestISOs/

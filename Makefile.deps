@@ -1,0 +1,71 @@
+# DeeVee — static dependency builds (libdvdcss / libdvdread / libdvdnav / FFmpeg)
+# Included from Makefile. All deps are built static + PIC and installed into
+# per-configuration prefixes under $(BUILD_DIR) so different DEEVEE_CSS modes
+# never share a libdvdread build.
+
+DEPS_DIR      := deps
+DVD_BUILD     := $(BUILD_DIR)/deps-css-$(DEEVEE_CSS)
+DVD_PREFIX    := $(abspath $(DVD_BUILD)/prefix)
+FFMPEG_BUILD  := $(BUILD_DIR)/ffmpeg
+FFMPEG_PREFIX := $(abspath $(FFMPEG_BUILD)/prefix)
+
+MESON         ?= meson
+NINJA         ?= ninja
+MESON_COMMON  := --buildtype=release --default-library=static \
+                 -Db_staticpic=true --libdir=lib --prefix=$(DVD_PREFIX) \
+                 -Denable_docs=false
+
+# libdvdread's 'libdvdcss' feature: enabled = link directly (we build it),
+# disabled = libdvdread dlopen()s libdvdcss at runtime if present.
+ifeq ($(DEEVEE_CSS),static)
+  DVDREAD_CSS_OPT := -Dlibdvdcss=enabled
+  DVDCSS_STAMP    := $(DVD_BUILD)/.libdvdcss.stamp
+else
+  DVDREAD_CSS_OPT := -Dlibdvdcss=disabled
+  DVDCSS_STAMP    :=
+endif
+
+DEPS_PKG_CONFIG_PATH := $(DVD_PREFIX)/lib/pkgconfig:$(FFMPEG_PREFIX)/lib/pkgconfig
+DEPS_ENV := PKG_CONFIG_PATH=$(DEPS_PKG_CONFIG_PATH) PKG_CONFIG_LIBDIR=$(DEPS_PKG_CONFIG_PATH)
+
+$(DVD_BUILD)/.libdvdcss.stamp:
+	@mkdir -p $(DVD_BUILD)
+	$(MESON) setup --reconfigure $(DVD_BUILD)/libdvdcss $(DEPS_DIR)/libdvdcss $(MESON_COMMON)
+	$(NINJA) -C $(DVD_BUILD)/libdvdcss install
+	@touch $@
+
+$(DVD_BUILD)/.libdvdread.stamp: $(DVDCSS_STAMP)
+	@mkdir -p $(DVD_BUILD)
+	$(DEPS_ENV) $(MESON) setup --reconfigure $(DVD_BUILD)/libdvdread $(DEPS_DIR)/libdvdread \
+		$(MESON_COMMON) $(DVDREAD_CSS_OPT)
+	$(NINJA) -C $(DVD_BUILD)/libdvdread install
+	@touch $@
+
+$(DVD_BUILD)/.libdvdnav.stamp: $(DVD_BUILD)/.libdvdread.stamp
+	$(DEPS_ENV) $(MESON) setup --reconfigure $(DVD_BUILD)/libdvdnav $(DEPS_DIR)/libdvdnav \
+		$(MESON_COMMON) -Denable_examples=false --wrap-mode=nofallback
+	$(NINJA) -C $(DVD_BUILD)/libdvdnav install
+	@touch $@
+
+FFMPEG_CONFIGURE := --prefix=$(FFMPEG_PREFIX) --enable-static --disable-shared --enable-pic \
+	--disable-everything --disable-programs --disable-doc --disable-network \
+	--disable-autodetect --disable-avdevice --disable-avformat --disable-avfilter \
+	--enable-avcodec --enable-swscale --enable-swresample \
+	--enable-decoder=mpeg2video,mpeg1video,ac3,dca,pcm_dvd,mp1,mp2 \
+	--enable-parser=mpegvideo,ac3,dca,mpegaudio
+
+$(FFMPEG_BUILD)/.ffmpeg.stamp:
+	@mkdir -p $(FFMPEG_BUILD)/build
+	cd $(FFMPEG_BUILD)/build && $(abspath $(DEPS_DIR)/ffmpeg)/configure $(FFMPEG_CONFIGURE)
+	$(MAKE) -C $(FFMPEG_BUILD)/build
+	$(MAKE) -C $(FFMPEG_BUILD)/build install
+	@touch $@
+
+DEPS_STAMPS := $(DVD_BUILD)/.libdvdnav.stamp $(FFMPEG_BUILD)/.ffmpeg.stamp
+
+deps: $(DEPS_STAMPS)
+
+deps-clean:
+	rm -rf $(DVD_BUILD) $(FFMPEG_BUILD)
+
+.PHONY: deps deps-clean

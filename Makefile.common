@@ -1,0 +1,9 @@
+CORE_DIR    := src
+LIBRETRO_COMM_DIR := libretro-common
+
+INCFLAGS := -I$(CORE_DIR) -I$(LIBRETRO_COMM_DIR)/include
+
+SOURCES_C := \
+	$(CORE_DIR)/libretro.c \
+	$(CORE_DIR)/dv_source.c \
+	$(CORE_DIR)/dv_nav.c

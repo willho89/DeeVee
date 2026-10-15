@@ -1,0 +1,20 @@
+[submodule "deps/libdvdcss"]
+	path = deps/libdvdcss
+	url = https://code.videolan.org/videolan/libdvdcss.git
+	shallow = true
+[submodule "deps/libdvdread"]
+	path = deps/libdvdread
+	url = https://code.videolan.org/videolan/libdvdread.git
+	shallow = true
+[submodule "deps/libdvdnav"]
+	path = deps/libdvdnav
+	url = https://code.videolan.org/videolan/libdvdnav.git
+	shallow = true
+[submodule "libretro-common"]
+	path = libretro-common
+	url = https://github.com/libretro/libretro-common.git
+	shallow = true
+[submodule "deps/ffmpeg"]
+	path = deps/ffmpeg
+	url = https://git.ffmpeg.org/ffmpeg.git
+	shallow = true

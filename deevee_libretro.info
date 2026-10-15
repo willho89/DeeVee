@@ -1,0 +1,24 @@
+# Software Information
+display_name = "Media Player (DeeVee)"
+authors = "DeeVee contributors"
+supported_extensions = "iso|ifo|img"
+corename = "DeeVee"
+categories = "Media Player"
+license = "GPLv2+"
+permissions = ""
+display_version = "0.1.0"
+
+# Hardware Information
+manufacturer = "N/A"
+systemname = "DVD-Video"
+systemid = "dvd_video"
+
+# Libretro Features
+supports_no_game = "false"
+database = ""
+savestate = "false"
+needs_fullpath = "true"
+disk_control = "false"
+is_experimental = "true"
+
+description = "Plays DVD-Video (ISO images, VIDEO_TS folders, mounted discs) with full menu navigation, built on libdvdnav and FFmpeg."
