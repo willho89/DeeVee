@@ -20,12 +20,28 @@
 #include "dv_video.h"
 #include "dv_render.h"
 #include "dv_audio.h"
+#include "dv_spu.h"
+#include "dv_overlay.h"
 
-#define DV_VERSION "0.3.0"
+#define DV_VERSION "0.4.0"
 
 #ifndef DEEVEE_CSS_MODE
 #define DEEVEE_CSS_MODE "unknown"
 #endif
+
+typedef enum
+{
+   DV_SUBS_AUTO = 0,   /* follow the disc */
+   DV_SUBS_ON,
+   DV_SUBS_OFF         /* forced subtitles still show */
+} dv_subs_mode_t;
+
+/* Core option values (CLAUDE.md §5.10), read by libretro.c. */
+typedef struct dv_options
+{
+   dv_subs_mode_t subtitles;
+   char           sub_lang[3];   /* ISO 639-1, "" = disc default */
+} dv_options_t;
 
 typedef struct dv_ctx
 {
@@ -42,6 +58,9 @@ typedef struct dv_ctx
    dv_video_t    video;
    dv_render_t   render;
    dv_audio_t    audio;
+   dv_spu_t      spu;
+   dv_overlay_t  overlay;
+   dv_options_t  opt;
 } dv_ctx_t;
 
 void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)

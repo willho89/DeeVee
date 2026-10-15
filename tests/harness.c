@@ -20,6 +20,8 @@
  *                                   white-flash onsets (video) vs beep onsets
  *                                   (audio), timed on the audio sample clock
  *   HARNESS_WAV=<file>              write the audio output as a WAV
+ *   HARNESS_OPT_<key>=<value>       core option value, e.g.
+ *                                   HARNESS_OPT_deevee_subtitles=on
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
@@ -280,6 +282,19 @@ static bool h_env(unsigned cmd, void *data)
          return true;
       case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
          return true;
+      case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION:
+         *(unsigned *)data = 2;
+         return true;
+      case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
+         return true;
+      case RETRO_ENVIRONMENT_GET_VARIABLE:
+      {
+         struct retro_variable *var = data;
+         char name[256];
+         snprintf(name, sizeof(name), "HARNESS_OPT_%s", var->key);
+         var->value = getenv(name);
+         return var->value != NULL;
+      }
       case RETRO_ENVIRONMENT_GET_CAN_DUPE:
          *(bool *)data = true;
          return true;

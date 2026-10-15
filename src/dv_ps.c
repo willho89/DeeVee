@@ -120,7 +120,10 @@ static void route(dv_ctx_t *ctx, unsigned id, const uint8_t *data, size_t len, i
       dv_audio_push(ctx, id, data, len, tl);
    }
    else if (DV_PS_IS_SPU(id))
-      ctx->ps_stats.spu_pes++;     /* TODO(M3): dv_spu */
+   {
+      ctx->ps_stats.spu_pes++;
+      dv_spu_push(ctx, id, data, len, tl);
+   }
    else
       ctx->ps_stats.other_pes++;
 }

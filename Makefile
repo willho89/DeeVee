@@ -97,9 +97,9 @@ $(HARNESS): tests/harness.c
 
 harness: $(HARNESS)
 
-FIXTURES := $(addprefix $(FIXTURE_DIR)/,ntsc43.iso pal169.iso avs_ac3.iso avs_lpcm.iso avs_mp2.iso avs_dts.iso)
+FIXTURES := $(addprefix $(FIXTURE_DIR)/,ntsc43.iso pal169.iso avs_ac3.iso avs_lpcm.iso avs_mp2.iso avs_dts.iso subs.iso)
 
-$(FIXTURES) &: tests/fixtures/make_fixture.sh
+$(FIXTURES) &: tests/fixtures/make_fixture.sh tests/fixtures/make_spu_png.py
 	tests/fixtures/make_fixture.sh $(FIXTURE_DIR)
 
 fixture: $(FIXTURES)
@@ -110,5 +110,8 @@ check: $(TARGET) $(HARNESS) $(FIXTURES)
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 600 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
+	HARNESS_OPT_deevee_subtitles=on $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/subs.iso 650 $(BUILD_DIR)/system
 
 .PHONY: harness fixture check

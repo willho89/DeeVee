@@ -11,6 +11,11 @@
 #            flash and a 100 ms 1 kHz beep every 30 frames (1.001 s, frame-aligned), as two 10 s
 #            VOB files (= two cells, PTS restart at the boundary).
 #            avs_ac3 is 5.1 with the beep only in the centre channel.
+#   subs    — subpictures: NTSC 4:3, 10 s dark grey; subtitles OFF by default.
+#            stream 0 "en": white box (bottom)       1-3 s
+#                           green box (bottom-left)  4-6 s
+#                           yellow box (top) FORCED  7-9 s
+#            stream 1 "fr": magenta box (middle)     1-9 s
 set -euo pipefail
 OUT=${1:?usage: make_fixture.sh <out_dir>}
 mkdir -p "$OUT"
@@ -96,3 +101,58 @@ make_avsync avs_ac3  ac3 "pan=5.1|FC=c0" -c:a ac3 -ac 6 -b:a 448k
 make_avsync avs_lpcm pcm anull -c:a pcm_s16be -ac 2
 make_avsync avs_mp2  mp2 anull -c:a mp2 -ac 2 -b:a 224k
 make_avsync avs_dts  dts anull -c:a dca -strict -2 -ac 2 -b:a 768k
+
+# ---- subpicture fixture --------------------------------------------------
+make_subs() {
+  local name=subs png="$(dirname "$0")/make_spu_png.py"
+  export VIDEO_FORMAT=NTSC
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "color=c=0x303030:s=720x480:r=30000/1001:d=10" \
+    -f lavfi -i "anullsrc=r=48000:cl=stereo:d=10" \
+    -target ntsc-dvd -aspect 4:3 -shortest "$WORK/subs_v.mpg"
+
+  python3 "$png" "$WORK/s_white.png"   720 480 260 400 459 439 ffffff 000000
+  python3 "$png" "$WORK/s_green.png"   720 480  40 400 239 439 00c000 000000
+  python3 "$png" "$WORK/s_yellow.png"  720 480 260  40 459  79 ffff00 000000
+  python3 "$png" "$WORK/s_magenta.png" 720 480 300 220 419 259 ff00ff ffffff
+
+  cat > "$WORK/s0.xml" <<XML
+<subpictures><stream>
+  <spu start="00:00:01.00" end="00:00:03.00" image="$WORK/s_white.png"  transparent="010101"/>
+  <spu start="00:00:04.00" end="00:00:06.00" image="$WORK/s_green.png"  transparent="010101"/>
+  <spu start="00:00:07.00" end="00:00:09.00" image="$WORK/s_yellow.png" transparent="010101" force="yes"/>
+</stream></subpictures>
+XML
+  cat > "$WORK/s1.xml" <<XML
+<subpictures><stream>
+  <spu start="00:00:01.00" end="00:00:09.00" image="$WORK/s_magenta.png" transparent="010101"/>
+</stream></subpictures>
+XML
+  spumux -s 0 "$WORK/s0.xml" < "$WORK/subs_v.mpg" > "$WORK/subs_s0.mpg" 2>/dev/null
+  spumux -s 1 "$WORK/s1.xml" < "$WORK/subs_s0.mpg" > "$WORK/subs_s1.mpg" 2>/dev/null
+
+  cat > "$WORK/$name.xml" <<XML
+<dvdauthor dest="$OUT/$name">
+  <vmgm>
+    <fpc>jump title 1;</fpc>
+  </vmgm>
+  <titleset>
+    <titles>
+      <video format="ntsc" aspect="4:3"/>
+      <audio format="ac3" lang="en"/>
+      <subpicture lang="en"/>
+      <subpicture lang="fr"/>
+      <pgc>
+        <vob file="$WORK/subs_s1.mpg"/>
+        <post>exit;</post>
+      </pgc>
+    </titles>
+  </titleset>
+</dvdauthor>
+XML
+  rm -rf "${OUT:?}/$name"
+  dvdauthor -x "$WORK/$name.xml" >/dev/null 2>&1
+  genisoimage -quiet -dvd-video -V DEEVEE_SUBS -o "$OUT/$name.iso" "$OUT/$name"
+  echo "fixture: $OUT/$name.iso"
+}
+make_subs

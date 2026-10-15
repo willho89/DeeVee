@@ -38,6 +38,8 @@ typedef struct dv_nav
    uint32_t vobu_index;
    uint32_t vobu_flush;
 
+   int32_t  policy_title;     /* title the subtitle options were last applied to */
+
    bool     stopped;          /* DVDNAV_STOP seen */
    uint32_t blocks;           /* BLOCK_OK packs received (stats) */
    uint32_t stills, waits, hops, discontinuities;
@@ -55,6 +57,10 @@ void dv_nav_fill(struct dv_ctx *ctx, int max_blocks);
 
 /* Per-tick still timer and WAIT release; call after presenting video. */
 void dv_nav_service(struct dv_ctx *ctx);
+
+/* Apply the subtitle core options (language, on/off) to the current title.
+ * Runs once per title unless force is set (option changed). */
+void dv_nav_apply_subtitle_options(struct dv_ctx *ctx, bool force);
 
 /* User action (temporary M1 binding for A): activate the highlighted menu
  * button, else skip a still. Full input mapping is M4. */

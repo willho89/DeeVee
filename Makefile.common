@@ -11,4 +11,6 @@ SOURCES_C := \
 	$(CORE_DIR)/dv_ps.c \
 	$(CORE_DIR)/dv_video.c \
 	$(CORE_DIR)/dv_render.c \
-	$(CORE_DIR)/dv_audio.c
+	$(CORE_DIR)/dv_audio.c \
+	$(CORE_DIR)/dv_spu.c \
+	$(CORE_DIR)/dv_overlay.c

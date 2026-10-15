@@ -46,6 +46,8 @@ static struct retro_system_av_info g_av;
 /* One tick of audio: 48000/50 = 960 frames max; headroom for odd rates. */
 #define DV_AUDIO_MAX_TICK 2048
 static int16_t  g_audio_buf[2 * DV_AUDIO_MAX_TICK];
+/* Video frame with the subpicture blended on (render.buf stays clean). */
+static uint32_t g_composite[DV_MAX_WIDTH * DV_MAX_HEIGHT];
 static double   g_audio_accum;
 
 /* ---- logging ---------------------------------------------------------- */
@@ -78,6 +80,102 @@ RETRO_API unsigned retro_api_version(void)
    return RETRO_API_VERSION;
 }
 
+/* ---- core options (CLAUDE.md §5.10; completed in M6) ------------------- */
+
+static struct retro_core_option_v2_category g_opt_categories[] = {
+   { "subtitles", "Subtitles", "Subtitle display and language." },
+   { NULL, NULL, NULL },
+};
+
+#define DV_LANG_VALUES \
+   { "auto", "Disc default" }, { "en", "English" }, { "fr", "French" }, \
+   { "es", "Spanish" }, { "de", "German" }, { "it", "Italian" }, \
+   { "pt", "Portuguese" }, { "nl", "Dutch" }, { "sv", "Swedish" }, \
+   { "da", "Danish" }, { "no", "Norwegian" }, { "fi", "Finnish" }, \
+   { "pl", "Polish" }, { "cs", "Czech" }, { "hu", "Hungarian" }, \
+   { "el", "Greek" }, { "tr", "Turkish" }, { "ru", "Russian" }, \
+   { "he", "Hebrew" }, { "ar", "Arabic" }, { "hi", "Hindi" }, \
+   { "th", "Thai" }, { "ja", "Japanese" }, { "ko", "Korean" }, \
+   { "zh", "Chinese" }, { NULL, NULL }
+
+static struct retro_core_option_v2_definition g_opt_defs[] = {
+   {
+      "deevee_subtitles", "Subtitles", NULL,
+      "Subtitle display when a title starts. 'Disc default' follows the disc. "
+      "Forced subtitles (e.g. translated signs) are always shown.",
+      NULL, "subtitles",
+      { { "auto", "Disc default" }, { "on", "On" }, { "off", "Off (forced only)" }, { NULL, NULL } },
+      "auto"
+   },
+   {
+      "deevee_subtitle_language", "Subtitle Language", NULL,
+      "Preferred subtitle language, applied when a title starts.",
+      NULL, "subtitles",
+      { DV_LANG_VALUES },
+      "auto"
+   },
+   { NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL },
+};
+
+static struct retro_core_options_v2 g_opts_v2 = { g_opt_categories, g_opt_defs };
+
+static void set_core_options(retro_environment_t cb)
+{
+   unsigned version = 0;
+   if (cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2)
+   {
+      cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &g_opts_v2);
+      return;
+   }
+   {
+      /* Legacy frontends: "Desc; default|other|...". */
+      static char desc[2][2048];
+      static struct retro_variable vars[3];
+      int i;
+      for (i = 0; i < 2; i++)
+      {
+         const struct retro_core_option_v2_definition *d = &g_opt_defs[i];
+         size_t n = (size_t)snprintf(desc[i], sizeof(desc[i]), "%s; %s", d->desc, d->default_value);
+         int v;
+         for (v = 0; d->values[v].value && n < sizeof(desc[i]); v++)
+            if (strcmp(d->values[v].value, d->default_value))
+               n += (size_t)snprintf(desc[i] + n, sizeof(desc[i]) - n, "|%s", d->values[v].value);
+         vars[i].key   = d->key;
+         vars[i].value = desc[i];
+      }
+      vars[2].key = vars[2].value = NULL;
+      cb(RETRO_ENVIRONMENT_SET_VARIABLES, vars);
+   }
+}
+
+static const char *get_option(const char *key)
+{
+   struct retro_variable var = { key, NULL };
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+      return var.value;
+   return NULL;
+}
+
+/* Returns true if anything changed. */
+static bool read_options(dv_ctx_t *ctx)
+{
+   dv_options_t o;
+   const char *v;
+
+   memset(&o, 0, sizeof(o));
+   v = get_option("deevee_subtitles");
+   o.subtitles = (v && !strcmp(v, "on"))  ? DV_SUBS_ON :
+                 (v && !strcmp(v, "off")) ? DV_SUBS_OFF : DV_SUBS_AUTO;
+   v = get_option("deevee_subtitle_language");
+   if (v && strlen(v) == 2)
+      memcpy(o.sub_lang, v, 3);
+
+   if (!memcmp(&o, &ctx->opt, sizeof(o)))
+      return false;
+   ctx->opt = o;
+   return true;
+}
+
 RETRO_API void retro_set_environment(retro_environment_t cb)
 {
    struct retro_log_callback logging;
@@ -89,6 +187,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
       log_cb = logging.log;
 
    cb(RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME, &no_game);
+   set_core_options(cb);
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -213,25 +312,48 @@ RETRO_API void retro_run(void)
    input_poll_cb();
    poll_input(ctx);
 
+   {
+      bool updated = false;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated &&
+          read_options(ctx))
+         dv_nav_apply_subtitle_options(ctx, true);
+   }
+
    dv_clock_advance(&ctx->clock);
    dv_nav_fill(ctx, DV_BLOCKS_PER_RUN);
    dv_video_present(ctx);
    dv_nav_service(ctx);
 
-   if (ctx->video.current_new)
    {
-      ctx->video.current_new = false;
-      if (dv_render_frame(ctx, ctx->video.current.frame))
+      const dv_subpic_t *sp = dv_spu_update(ctx);
+      bool redraw = ctx->spu.changed;
+
+      if (ctx->video.current_new)
       {
-         update_av_info(ctx);
-         video_cb(r->buf, r->width, r->height, r->width * sizeof(uint32_t));
+         ctx->video.current_new = false;
+         if (dv_render_frame(ctx, ctx->video.current.frame))
+         {
+            update_av_info(ctx);
+            redraw = true;
+         }
       }
+      ctx->spu.changed = false;
+
+      if (redraw && r->valid)
+      {
+         const uint32_t *frame = r->buf;
+         if (sp)
+         {
+            dv_overlay_compose(ctx, r->buf, g_composite, r->width, r->height, sp, NULL);
+            frame = g_composite;
+         }
+         video_cb(frame, r->width, r->height, r->width * sizeof(uint32_t));
+      }
+      else if (g_can_dupe && r->valid)
+         video_cb(NULL, r->width, r->height, r->width * sizeof(uint32_t));
       else
-         video_cb(g_can_dupe ? NULL : r->buf, r->width, r->height, r->width * sizeof(uint32_t));
+         video_cb(sp ? g_composite : r->buf, r->width, r->height, r->width * sizeof(uint32_t));
    }
-   else
-      video_cb(g_can_dupe && r->valid ? NULL : r->buf, r->width, r->height,
-               r->width * sizeof(uint32_t));
 
    output_audio(ctx);
 }
@@ -269,16 +391,20 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    g_can_dupe = false;
    environ_cb(RETRO_ENVIRONMENT_GET_CAN_DUPE, &g_can_dupe);
 
+   read_options(g_ctx);
    dv_source_setup_css_env(g_ctx);
    dv_clock_init(&g_ctx->clock, DV_FPS_NTSC);
 
+   dv_overlay_init(g_ctx);
    if (!dv_video_init(g_ctx) || !dv_render_init(g_ctx) || !dv_audio_init(g_ctx) ||
+       !dv_spu_init(g_ctx) ||
        !dv_source_resolve(g_ctx, game->path, &g_ctx->source) ||
        !dv_nav_open(g_ctx, &g_ctx->source))
    {
       dv_video_free(g_ctx);
       dv_render_free(g_ctx);
       dv_audio_free(g_ctx);
+      dv_spu_free(g_ctx);
       free(g_ctx);
       g_ctx = NULL;
       return false;
@@ -347,10 +473,14 @@ RETRO_API void retro_unload_game(void)
              (unsigned long long)a->out_frames, (unsigned long long)a->silence_frames,
              (unsigned long long)a->dropped_frames, (unsigned long long)a->gap_frames);
    }
+   dv_log(g_ctx, RETRO_LOG_INFO, "Subpictures: packets %u, decoded %u, displayed %u, errors %u, unsupported cmds %u\n",
+          g_ctx->spu.packets, g_ctx->spu.decoded, g_ctx->spu.displayed, g_ctx->spu.errors,
+          g_ctx->spu.unsupported);
    dv_nav_close(g_ctx);
    dv_video_free(g_ctx);
    dv_render_free(g_ctx);
    dv_audio_free(g_ctx);
+   dv_spu_free(g_ctx);
    free(g_ctx);
    g_ctx = NULL;
 }

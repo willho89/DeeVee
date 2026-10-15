@@ -75,7 +75,8 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
    dvdnav_status_t st;
 
    memset(nav, 0, sizeof(*nav));
-   nav->stream.ctx = ctx;
+   nav->stream.ctx    = ctx;
+   nav->policy_title  = -1;
 
    if (src->kind == DV_SOURCE_IMAGE)
    {
@@ -106,7 +107,7 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
    /* TODO(M5): menu/audio/SPU language + forced region from core options. */
    dvdnav_menu_language_select(nav->dvdnav, "en");
    dvdnav_audio_language_select(nav->dvdnav, "en");
-   dvdnav_spu_language_select(nav->dvdnav, "en");
+   dvdnav_spu_language_select(nav->dvdnav, ctx->opt.sub_lang[0] ? ctx->opt.sub_lang : "en");
 
    if (dvdnav_get_disk_region_mask(nav->dvdnav, &nav->disc_region_mask) != DVDNAV_STATUS_OK)
       nav->disc_region_mask = 0xFF;
@@ -388,6 +389,7 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             uint32_t w = 0, h = 0;
             dvdnav_get_video_resolution(nav->dvdnav, &w, &h);
             nav->ifo_aspect = dvdnav_get_video_aspect(nav->dvdnav);
+            dv_spu_clear(ctx);
             dv_log(ctx, RETRO_LOG_INFO, "VTS %d -> %d (domain %d), video %ux%u, aspect code %u\n",
                    ev->old_vtsN, ev->new_vtsN, ev->new_domain, w, h, nav->ifo_aspect);
             break;
@@ -401,9 +403,23 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             break;
          }
 
+         case DVDNAV_SPU_CLUT_CHANGE:
+            /* 16 x uint32 0x00YYCrCb in the event buffer. */
+            dv_overlay_set_clut(ctx, (const uint32_t *)buf);
+            ctx->spu.changed = true;
+            break;
+
+         case DVDNAV_SPU_STREAM_CHANGE:
+            /* Physical stream for the current aspect; 0x80 = display off
+             * (forced only). Also fires at every cell start. */
+            dv_nav_apply_subtitle_options(ctx, false);
+            dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
+            break;
+
          case DVDNAV_HOP_CHANNEL:
             /* As VLC: reset the clock, keep decoders (flushing would drop
              * the tail of every looping menu). Seeks flush explicitly. */
+            dv_spu_clear(ctx);
             nav->hops++;
             nav->vobu_index = 0;
             nav->vobu_flush = 0;
@@ -455,6 +471,45 @@ void dv_nav_service(dv_ctx_t *ctx)
       nav->waits++;
       dv_clock_unanchor(&ctx->clock);
    }
+}
+
+void dv_nav_apply_subtitle_options(dv_ctx_t *ctx, bool force)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int32_t title = 0, part = 0;
+   const dv_options_t *o = &ctx->opt;
+
+   if (!nav->dvdnav || !dvdnav_is_domain_vts(nav->dvdnav))
+      return;
+   if (dvdnav_current_title_info(nav->dvdnav, &title, &part) != DVDNAV_STATUS_OK)
+      return;
+   if (!force && title == nav->policy_title)
+      return;
+   nav->policy_title = title;
+
+   if (o->sub_lang[0])
+   {
+      uint16_t want = (uint16_t)((o->sub_lang[0] << 8) | o->sub_lang[1]);
+      int logical;
+      for (logical = 0; logical < 32; logical++)
+         if (dvdnav_spu_stream_to_lang(nav->dvdnav, (uint8_t)logical) == want)
+         {
+            if (dvdnav_set_active_stream(nav->dvdnav, (uint8_t)logical,
+                                         DVD_SUBTITLE_STREAM) == DVDNAV_STATUS_OK)
+               dv_log(ctx, RETRO_LOG_INFO, "Subtitles: title %d, '%s' = logical stream %d\n",
+                      title, o->sub_lang, logical);
+            break;
+         }
+      if (logical == 32)
+         dv_log(ctx, RETRO_LOG_INFO, "Subtitles: title %d has no '%s' stream\n", title, o->sub_lang);
+   }
+
+   if (o->subtitles == DV_SUBS_ON)
+      dvdnav_toggle_spu_stream(nav->dvdnav, 1);
+   else if (o->subtitles == DV_SUBS_OFF)
+      dvdnav_toggle_spu_stream(nav->dvdnav, 0);
+
+   dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
 }
 
 void dv_nav_activate(dv_ctx_t *ctx)
