@@ -51,6 +51,9 @@ DEPS_CFLAGS = $(shell $(DEPS_ENV) $(PKG_CONFIG) --cflags $(PKGS))
 DEPS_LIBS   = $(shell $(DEPS_ENV) $(PKG_CONFIG) --static --libs $(PKGS))
 
 CSS_DEFINE := -DDEEVEE_CSS_MODE=\"$(DEEVEE_CSS)\"
+ifeq ($(DEEVEE_CSS),static)
+  CSS_DEFINE += -DDEEVEE_CSS_STATIC
+endif
 
 ifeq ($(DEBUG),1)
   OPTFLAGS := -O0 -g
@@ -70,7 +73,12 @@ OBJECTS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SOURCES_C)) $(LIBCHDR_OBJS)
 
 all: $(TARGET)
 
-$(TARGET): $(DEPS_STAMPS) $(OBJECTS)
+# Every DEEVEE_CSS mode links to the same file name: relink when the mode
+# changes, even if the target is newer than that mode's objects.
+CSS_STAMP := $(BUILD_DIR)/.css-mode
+$(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(CSS_STAMP) 2>/dev/null)" = "$(DEEVEE_CSS)" ] || echo $(DEEVEE_CSS) > $(CSS_STAMP))
+
+$(TARGET): $(DEPS_STAMPS) $(OBJECTS) $(CSS_STAMP)
 	$(CC) -o $@ $(OBJECTS) $(LDFLAGS) $(DEPS_LIBS) $(LIBS)
 
 # Objects depend on the deps being installed (headers). Order-only so a dep
@@ -118,10 +126,13 @@ CHD_FIXTURES := $(addprefix $(FIXTURE_DIR)/,avs_ac3.chd subs.chd)
 $(FIXTURE_DIR)/%.chd: $(FIXTURE_DIR)/%.iso
 	chdman createdvd -f -i $< -o $@ >/dev/null
 
-fixture: $(FIXTURES) $(CHD_FIXTURES)
+$(FIXTURE_DIR)/scrambled.iso: $(FIXTURE_DIR)/ntsc43.iso tests/fixtures/scramble.py
+	python3 tests/fixtures/scramble.py $< $@
+
+fixture: $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
 
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
-check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES)
+check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
 	@mkdir -p $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
@@ -139,6 +150,11 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES)
 	  opt=$${m%:*}; want=$${m##*:}; \
 	  HARNESS_OPT_deevee_tv_display=$$opt $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 120 $(BUILD_DIR)/system 2>/dev/null \
 	    | grep -q "^av: 720x576 .*aspect $$want" && echo "   $$opt -> $$want (ok)" || { echo "   $$opt: expected aspect $$want"; exit 1; }; done
+	@echo "== Encrypted data that can't be decrypted: alert once, halt (no End of Disc loop)"
+	@out=$$(HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/scrambled.iso 300 $(BUILD_DIR)/system 2>&1); \
+	  echo "$$out" | grep -q "OSD: This disc is encrypted" && ! echo "$$out" | grep -q "End of disc" \
+	  && echo "$$out" | grep -q "scrambled 1$$" && echo "   scrambled.iso: alert + halt (ok)" \
+	  || { echo "   scrambled.iso: FAILED"; exit 1; }
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
 	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
 	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"

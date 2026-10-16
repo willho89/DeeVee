@@ -61,4 +61,23 @@ void dv_source_setup_css_env(struct dv_ctx *ctx);
 /* DVDCSS_METHOD from the core option (env only; D-003). */
 void dv_source_setup_css_method(struct dv_ctx *ctx);
 
+/* Where CSS decryption comes from (D-024). */
+typedef enum
+{
+   DV_CSS_MISSING = 0,   /* unencrypted discs only (the common case: rips) */
+   DV_CSS_BUILTIN,       /* DEEVEE_CSS=static */
+   DV_CSS_SYSTEM_DIR,    /* user put libdvdcss in RetroArch's system folder */
+   DV_CSS_OS             /* found on the library path (e.g. distro package) */
+} dv_css_t;
+
+/* File name libdvdread dlopen()s, which is also the name expected in the
+ * system folder. */
+const char *dv_source_css_lib_name(void);
+
+/* Non-static builds: load libdvdcss from the system folder before libdvdread
+ * looks for it by name, so its own dlopen() resolves to the loaded copy
+ * (glibc matches the soname, Windows the module name). Sets ctx->css. */
+void dv_source_load_css(struct dv_ctx *ctx);
+void dv_source_unload_css(struct dv_ctx *ctx);
+
 #endif

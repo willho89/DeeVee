@@ -14,6 +14,14 @@
 #include <direct.h>
 #endif
 
+#if !defined(DEEVEE_CSS_STATIC)
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+#endif
+
 #include "dv_ctx.h"
 #include "dv_source.h"
 
@@ -384,3 +392,101 @@ void dv_source_setup_css_method(dv_ctx_t *ctx)
 #endif
    dv_log(ctx, RETRO_LOG_INFO, "DVDCSS_METHOD=%s\n", ctx->opt.css_method);
 }
+
+/* ---- user-supplied libdvdcss (D-024) ----------------------------------- */
+
+/* Must match libdvdread dvd_input.c CSS_LIB. */
+const char *dv_source_css_lib_name(void)
+{
+#if defined(__APPLE__)
+   return "libdvdcss.2.dylib";
+#elif defined(_WIN32)
+   return "libdvdcss-2.dll";
+#else
+   return "libdvdcss.so.2";
+#endif
+}
+
+#if defined(DEEVEE_CSS_STATIC)
+void dv_source_load_css(dv_ctx_t *ctx)
+{
+   ctx->css = DV_CSS_BUILTIN;
+}
+
+void dv_source_unload_css(dv_ctx_t *ctx)
+{
+}
+#else
+static void *lib_open(const char *path)
+{
+#ifdef _WIN32
+   wchar_t wpath[4096];
+   void *h;
+   UINT em;
+   if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, 4096))
+      return NULL;
+   em = SetErrorMode(SEM_FAILCRITICALERRORS);
+   h = (void *)LoadLibraryW(wpath);
+   SetErrorMode(em);
+   return h;
+#else
+   return dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+#endif
+}
+
+static void lib_close(void *h)
+{
+#ifdef _WIN32
+   FreeLibrary((HMODULE)h);
+#else
+   dlclose(h);
+#endif
+}
+
+void dv_source_load_css(dv_ctx_t *ctx)
+{
+   const char *name = dv_source_css_lib_name();
+   char path[4096 + 64];
+
+   ctx->css = DV_CSS_MISSING;
+   if (ctx->css_lib)
+      lib_close(ctx->css_lib);
+   ctx->css_lib = NULL;
+
+   if (*ctx->system_dir)
+   {
+#ifdef _WIN32
+      snprintf(path, sizeof(path), "%s\\%s", ctx->system_dir, name);
+#else
+      snprintf(path, sizeof(path), "%s/%s", ctx->system_dir, name);
+#endif
+      ctx->css_lib = lib_open(path);
+      if (ctx->css_lib)
+      {
+         ctx->css = DV_CSS_SYSTEM_DIR;
+         dv_log(ctx, RETRO_LOG_INFO, "libdvdcss: loaded %s\n", path);
+         return;
+      }
+   }
+
+   /* Same lookup libdvdread is about to do (library path, beside the
+    * executable on Windows). */
+   ctx->css_lib = lib_open(name);
+   if (ctx->css_lib)
+   {
+      ctx->css = DV_CSS_OS;
+      dv_log(ctx, RETRO_LOG_INFO, "libdvdcss: using the system's %s\n", name);
+      return;
+   }
+   dv_log(ctx, RETRO_LOG_INFO, "libdvdcss: not found (%s in the system folder); "
+          "unencrypted discs only\n", name);
+}
+
+void dv_source_unload_css(dv_ctx_t *ctx)
+{
+   /* libdvdread holds its own reference, so this only drops ours. */
+   if (ctx->css_lib)
+      lib_close(ctx->css_lib);
+   ctx->css_lib = NULL;
+}
+#endif

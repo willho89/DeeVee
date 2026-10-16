@@ -21,4 +21,19 @@ needs_fullpath = "true"
 disk_control = "false"
 is_experimental = "true"
 
+# Firmware / BIOS (D-024): libdvdcss is optional and only needed for
+# CSS-encrypted discs and raw images. Decrypted rips (MakeMKV etc.) play
+# without it. File name depends on the platform.
+firmware_count = 3
+firmware0_desc = "libdvdcss.so.2 (CSS decryption, Linux/Android, optional)"
+firmware0_path = "libdvdcss.so.2"
+firmware0_opt = "true"
+firmware1_desc = "libdvdcss-2.dll (CSS decryption, Windows, optional)"
+firmware1_path = "libdvdcss-2.dll"
+firmware1_opt = "true"
+firmware2_desc = "libdvdcss.2.dylib (CSS decryption, macOS, optional)"
+firmware2_path = "libdvdcss.2.dylib"
+firmware2_opt = "true"
+notes = "(!) Encrypted discs need libdvdcss in RetroArch's system folder.|(!) Decrypted rips (e.g. MakeMKV ISOs) play without it."
+
 description = "Plays DVD-Video (ISO and CHD images, VIDEO_TS folders, mounted discs) with full menu navigation, built on libdvdnav and FFmpeg."

@@ -70,6 +70,9 @@ typedef struct dv_ctx
    struct retro_vfs_interface *vfs;   /* NULL if frontend has no VFS v1+ */
 
    char system_dir[4096];
+   dv_css_t css;          /* where CSS decryption comes from (D-024) */
+   void    *css_lib;      /* our handle on a dlopen()ed libdvdcss */
+   bool     css_blocked;  /* encrypted data we can't decrypt: playback halted */
 
    dv_source_t   source;
    dv_nav_t      nav;
@@ -94,6 +97,13 @@ void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)
 
 /* On-screen message (CLAUDE.md §5.11), honours the Show OSD option. */
 void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
+#ifdef __GNUC__
+   __attribute__((format(printf, 3, 4)))
+#endif
+   ;
+
+/* Like dv_osd, but shown even with Show OSD off (errors the user must act on). */
+void dv_osd_alert(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
 #ifdef __GNUC__
    __attribute__((format(printf, 3, 4)))
 #endif

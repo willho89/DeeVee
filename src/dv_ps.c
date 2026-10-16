@@ -21,6 +21,27 @@
 #include "dv_ctx.h"
 #include "dv_ps.h"
 
+/* First undecryptable packet: say why, once per disc. */
+static void dv_ps_report_scrambled(dv_ctx_t *ctx)
+{
+   /* Halt reading: there's nothing playable, and an empty title would
+    * otherwise end at once and loop through End of Disc. */
+   ctx->css_blocked = true;
+   if (ctx->css == DV_CSS_MISSING)
+   {
+      dv_log(ctx, RETRO_LOG_ERROR, "Disc is CSS-encrypted and libdvdcss was not found: "
+             "place %s in RetroArch's system folder (%s)\n",
+             dv_source_css_lib_name(), ctx->system_dir);
+      dv_osd_alert(ctx, 10000, "This disc is encrypted: place %s in RetroArch's system folder",
+             dv_source_css_lib_name());
+   }
+   else
+   {
+      dv_log(ctx, RETRO_LOG_ERROR, "CSS decryption failed (encrypted packets after libdvdcss)\n");
+      dv_osd_alert(ctx, 10000, "This disc is encrypted and could not be decrypted");
+   }
+}
+
 /* Ported from VLC pes.h ExtractPESTimestamp(). */
 static int extract_pes_timestamp(const uint8_t *p, uint8_t flags, int64_t *ret)
 {
@@ -171,6 +192,15 @@ void dv_ps_demux(dv_ctx_t *ctx, const uint8_t *p, size_t len)
             if (hdr < 0)
             {
                ctx->ps_stats.errors++;
+               break;
+            }
+            /* PES_scrambling_control: libdvdcss clears it when it
+             * descrambles, so a set value means the data is still
+             * encrypted. Never feed that to the decoders. */
+            if ((p[6] & 0xC0) == 0x80 && (p[6] & 0x30))
+            {
+               if (!ctx->ps_stats.scrambled++)
+                  dv_ps_report_scrambled(ctx);
                break;
             }
             payload = p + hdr;

@@ -26,6 +26,7 @@ typedef struct dv_ps_stats
 {
    uint32_t packs;
    uint32_t video_pes, audio_pes, spu_pes, other_pes, errors;
+   uint32_t scrambled;   /* CSS-scrambled PES not decrypted (dropped) */
 } dv_ps_stats_t;
 
 /* Demux one pack (or any buffer of whole PS packets) and route payloads. */

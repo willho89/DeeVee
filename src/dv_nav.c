@@ -46,6 +46,10 @@ static void nav_log(void *priv, dvdnav_logger_level_t level, const char *fmt, va
       default:                        rl = RETRO_LOG_DEBUG; break;
    }
    vsnprintf(buf, sizeof(buf), fmt, va);
+   /* Normal without libdvdcss (decrypted rips); dv_ps reports discs that
+    * actually need it. */
+   if (rl == RETRO_LOG_WARN && strstr(buf, "Encrypted DVD support unavailable"))
+      rl = RETRO_LOG_INFO;
    dv_log(ctx, rl, "[dvdnav] %s\n", buf);
 }
 
@@ -354,10 +358,10 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
    dv_nav_t *nav = &ctx->nav;
    int i;
 
-   if (!nav->dvdnav)
+   if (!nav->dvdnav || ctx->css_blocked)
       return;
 
-   for (i = 0; i < max_blocks; i++)
+   for (i = 0; i < max_blocks && !ctx->css_blocked; i++)
    {
       /* Event payloads (highlight, VTS change, ...) are written into the
        * buffer we pass; only BLOCK_OK repoints buf into libdvdnav's cache. */

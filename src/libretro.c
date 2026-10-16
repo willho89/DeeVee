@@ -74,18 +74,15 @@ void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)
    cb(level, "[DeeVee] %s", buf);
 }
 
-void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
+static void show_message(dv_ctx_t *ctx, unsigned ms, bool alert, const char *fmt, va_list va)
 {
    char buf[256];
-   va_list va;
    struct retro_message_ext msg;
    unsigned version = 0;
 
-   va_start(va, fmt);
    vsnprintf(buf, sizeof(buf), fmt, va);
-   va_end(va);
    dv_log(ctx, RETRO_LOG_DEBUG, "OSD: %s\n", buf);
-   if (!ctx || !ctx->opt.osd || !environ_cb)
+   if (!ctx || (!ctx->opt.osd && !alert) || !environ_cb)
       return;
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &version) && version >= 1)
@@ -93,10 +90,10 @@ void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
       memset(&msg, 0, sizeof(msg));
       msg.msg      = buf;
       msg.duration = ms;
-      msg.priority = 1;
-      msg.level    = RETRO_LOG_INFO;
+      msg.priority = alert ? 3 : 1;
+      msg.level    = alert ? RETRO_LOG_WARN : RETRO_LOG_INFO;
       msg.target   = RETRO_MESSAGE_TARGET_OSD;
-      msg.type     = RETRO_MESSAGE_TYPE_NOTIFICATION_ALT;
+      msg.type     = alert ? RETRO_MESSAGE_TYPE_NOTIFICATION : RETRO_MESSAGE_TYPE_NOTIFICATION_ALT;
       msg.progress = -1;
       environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &msg);
    }
@@ -105,6 +102,22 @@ void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
       struct retro_message old = { buf, (unsigned)(ms * 60 / 1000) };
       environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &old);
    }
+}
+
+void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
+{
+   va_list va;
+   va_start(va, fmt);
+   show_message(ctx, ms, false, fmt, va);
+   va_end(va);
+}
+
+void dv_osd_alert(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
+{
+   va_list va;
+   va_start(va, fmt);
+   show_message(ctx, ms, true, fmt, va);
+   va_end(va);
 }
 
 /* ---- libretro API ----------------------------------------------------- */
@@ -515,7 +528,8 @@ RETRO_API void retro_run(void)
    dv_nav_update_highlight(ctx);
 
    /* End of disc (DVDNAV_STOP), once everything has been presented. */
-   if (ctx->nav.stopped && dv_video_empty(&ctx->video) && dv_clock_drained(&ctx->clock))
+   if (ctx->nav.stopped && !ctx->css_blocked &&
+       dv_video_empty(&ctx->video) && dv_clock_drained(&ctx->clock))
    {
       if (ctx->opt.end_of_disc == 2)
          environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
@@ -623,6 +637,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    dv_input_set_descriptors(environ_cb);
 
    read_options(g_ctx);
+   dv_source_load_css(g_ctx);
    dv_source_setup_css_env(g_ctx);
    dv_source_setup_css_method(g_ctx);
    dv_clock_init(&g_ctx->clock, DV_FPS_NTSC);
@@ -637,6 +652,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
       dv_render_free(g_ctx);
       dv_audio_free(g_ctx);
       dv_spu_free(g_ctx);
+      dv_source_unload_css(g_ctx);
       free(g_ctx);
       g_ctx = NULL;
       return false;
@@ -688,9 +704,9 @@ RETRO_API void retro_unload_game(void)
       const dv_ps_stats_t *ps = &g_ctx->ps_stats;
       dv_log(g_ctx, RETRO_LOG_INFO,
              "Stats: packs %u (video PES %u, audio %u, spu %u, other %u, errors %u); "
-             "stills %u, waits %u, hops %u, vobu discontinuities %u\n",
+             "stills %u, waits %u, hops %u, vobu discontinuities %u, scrambled %u\n",
              n->blocks, ps->video_pes, ps->audio_pes, ps->spu_pes, ps->other_pes,
-             ps->errors, n->stills, n->waits, n->hops, n->discontinuities);
+             ps->errors, n->stills, n->waits, n->hops, n->discontinuities, ps->scrambled);
       dv_log(g_ctx, RETRO_LOG_INFO,
              "Video: decoded %u, presented %u, dropped %u, overflow %u, interpolated %u, errors %u; "
              "cadence (ticks/frame) 1:%u 2:%u 3:%u 4:%u 5+:%u\n",
@@ -715,6 +731,7 @@ RETRO_API void retro_unload_game(void)
    dv_render_free(g_ctx);
    dv_audio_free(g_ctx);
    dv_spu_free(g_ctx);
+   dv_source_unload_css(g_ctx);
    free(g_ctx);
    g_ctx = NULL;
 }
