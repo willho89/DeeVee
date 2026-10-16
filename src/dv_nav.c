@@ -15,6 +15,7 @@
  *   LGPL-2.1-or-later
  * Adapted for DeeVee (combined work distributed under GPL-2.0-or-later).
  */
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -443,6 +444,9 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             dvdnav_cell_change_event_t *ev = (dvdnav_cell_change_event_t *)buf;
             int32_t title = 0, part = 0;
             nav->pgc_length = ev->pgc_length;
+            /* Same fields VLC logs for DVDNAV_CELL_CHANGE (oracle diffs, M6c). */
+            dv_log(ctx, RETRO_LOG_DEBUG, "navstate: cellN=%d pgN=%d pgc_length=%lld cell_start=%lld\n",
+                   ev->cellN, ev->pgN, (long long)ev->pgc_length, (long long)ev->cell_start);
             if (dvdnav_current_title_info(nav->dvdnav, &title, &part) == DVDNAV_STATUS_OK)
             {
                dv_log(ctx, RETRO_LOG_DEBUG, "cell change: title %d chapter %d\n", title, part);
@@ -683,8 +687,15 @@ const pci_t *dv_nav_presented_pci(dv_ctx_t *ctx)
 
    if (!nav->pci_count)
       return NULL;
+   /* With the clock held (WAIT, still) nothing re-anchors it: use the held
+    * time, and in a still the newest PCI (reading has stopped, it's the one
+    * the still belongs to). Otherwise a menu reached when a title ends
+    * kept the title's button-less PCIs on screen and showed no highlight
+    * (TIMERIC, M6c; same cause as the held-clock SPU case in dv_spu). */
+   if (!c->anchored)
+      now = nav->still ? INFINITY : c->now;
    /* Drop PCIs superseded by a later one that is already on screen. */
-   while (c->anchored && nav->pci_count >= 2 &&
+   while (nav->pci_count >= 2 &&
           (double)nav->pcis[(nav->pci_head + 1) % DV_PCI_QUEUE].start <= now)
    {
       nav->pci_head = (nav->pci_head + 1) % DV_PCI_QUEUE;
@@ -737,6 +748,26 @@ void dv_nav_update_highlight(dv_ctx_t *ctx)
          }
       }
    }
+
+   /* Button link table of each new menu PCI (oracle walks, M6c). */
+   pci = dv_nav_presented_pci(ctx);
+   if (pci && pci->hli.hl_gi.hli_ss && pci->hli.hl_gi.btn_ns &&
+       pci->pci_gi.nv_pck_lbn != nav->logged_btn_lbn &&
+       memcmp(&pci->hli.btnit, &nav->logged_btnit, sizeof(nav->logged_btnit)))
+   {
+      char line[1024];
+      int b, n = 0, cnt = pci->hli.hl_gi.btn_ns;
+      for (b = 0; b < cnt && b < 36 && n < (int)sizeof(line) - 32; b++)
+      {
+         const btni_t *bt = &pci->hli.btnit[b];
+         n += snprintf(line + n, sizeof(line) - n, " %d:%d/%d/%d/%d%s", b + 1, bt->up, bt->down,
+                       bt->left, bt->right, bt->auto_action_mode ? "a" : "");
+      }
+      dv_log(ctx, RETRO_LOG_DEBUG, "buttons (u/d/l/r):%s\n", line);
+      memcpy(&nav->logged_btnit, &pci->hli.btnit, sizeof(nav->logged_btnit));
+   }
+   if (pci)
+      nav->logged_btn_lbn = pci->pci_gi.nv_pck_lbn;
 
    if (memcmp(&hl, &ctx->highlight, sizeof(hl)))
    {

@@ -81,6 +81,9 @@ typedef struct dv_nav
    int32_t  last_title, last_part;  /* for chapter OSD */
    int64_t  seek_target;      /* last seek target, -1 = none pending (logs landing) */
 
+   uint32_t logged_btn_lbn;   /* debug: last PCI whose buttons were logged */
+   btni_t   logged_btnit[36];
+
    bool     stopped;          /* DVDNAV_STOP seen */
    uint32_t blocks;           /* BLOCK_OK packs received (stats) */
    uint32_t stills, waits, hops, discontinuities;

@@ -369,10 +369,41 @@ const dv_subpic_t *dv_spu_update(dv_ctx_t *ctx)
    int i, cur = -1, prev = s->shown;
    const dv_subpic_t *p;
 
+   /* Newest subpicture that has started supersedes everything before it.
+    * With the clock held (after a WAIT, through a still) no picture will
+    * re-anchor it, but VLC's clock keeps running there: show what has
+    * started by the held time, and in a still anything demuxed for it
+    * (reading has stopped, so the queue belongs to the still). Found on
+    * TIMERIC's sub-menus: WAIT -> SPU -> infinite still (M6c). */
    if (!c->anchored)
-      return s->shown >= 0 ? &s->q[s->shown] : NULL;
+   {
+      bool held_still = ctx->nav.still;
+      for (i = 0; i < s->qcount; i++)
+         if (held_still || (double)s->q[i].start <= c->now)
+            cur = i;
+      if (cur < 0)
+         return s->shown >= 0 ? &s->q[s->shown] : NULL;
+      if (cur > 0)
+         drop_front(s, cur);
+      p = &s->q[0];
+      if (s->hidden && !p->forced)
+      {
+         if (s->shown >= 0)
+            s->changed = true;
+         s->shown = -1;
+         return NULL;
+      }
+      if (s->shown != 0)
+      {
+         s->changed = true;
+         s->displayed++;
+         dv_log(ctx, RETRO_LOG_DEBUG, "spu: show start %lld (clock held at %.0f)\n",
+                (long long)p->start, c->now);
+      }
+      s->shown = 0;
+      return p;
+   }
 
-   /* Newest subpicture that has started supersedes everything before it. */
    for (i = 0; i < s->qcount; i++)
       if ((double)s->q[i].start <= now)
          cur = i;

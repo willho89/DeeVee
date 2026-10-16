@@ -159,4 +159,18 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled
 	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
 	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
 
-.PHONY: harness fixture check
+# Regression checks on the local, uncommitted TestISOs/ (skipped if absent).
+# Menu cases found against VLC in M6c (tests/oracle/).
+TIMERIC := TestISOs/TIMERIC.iso
+check-discs: $(TARGET) $(HARNESS)
+	@if [ ! -f $(TIMERIC) ]; then echo "== $(TIMERIC) not found, skipping"; exit 0; fi; \
+	echo "== TIMERIC: sub-menu after activation shows its menu SPU + highlight (WAIT -> still)"; \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:RIGHT,959:A" $(HARNESS) ./$(TARGET) $(TIMERIC) 1100 $(BUILD_DIR)/system 2>&1); \
+	echo "$$out" | grep -qE '^\[f9[6-9][0-9] .*spu: show' && echo "$$out" | grep -qE '^\[f9[5-9][0-9] .*highlight: button 1 ' \
+	  && echo "   More Shorts menu highlighted (ok)" || { echo "   More Shorts menu: FAILED"; exit 1; }; \
+	echo "== TIMERIC: menu reached when a short ends is highlighted (held-clock PCI)"; \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" $(HARNESS) ./$(TARGET) $(TIMERIC) 6300 $(BUILD_DIR)/system 2>&1); \
+	echo "$$out" | grep -qE '^\[f6[01][0-9][0-9] .*highlight: button 1 ' \
+	  && echo "   Field Day menu after 'Meet Campy!' highlighted (ok)" || { echo "   return menu: FAILED"; exit 1; }
+
+.PHONY: harness fixture check check-discs
