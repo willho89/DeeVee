@@ -47,6 +47,8 @@ static struct retro_system_av_info g_av;
 static int16_t  g_audio_buf[2 * DV_AUDIO_MAX_TICK];
 /* Video frame with the subpicture blended on (render.buf stays clean). */
 static uint32_t g_composite[DV_MAX_WIDTH * DV_MAX_HEIGHT];
+static const uint32_t *g_last_frame;   /* what video_cb was last given */
+static dv_disp_t g_last_mode;
 static double   g_audio_accum;
 
 /* ---- logging ---------------------------------------------------------- */
@@ -149,6 +151,17 @@ static struct retro_core_option_v2_definition g_opt_defs[] = {
       NULL, "video",
       { { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { NULL, NULL } },
       "auto"
+   },
+   {
+      "deevee_tv_display", "TV Display Type", NULL,
+      "The TV the virtual player drives, as in a hardware player's setup menu. On a 4:3 TV, "
+      "widescreen video is letterboxed (black bars) or panned & scanned (sides cropped), and "
+      "discs with separate 4:3 menus or subtitles use them. The disc's own menus may only "
+      "pick up a change after reloading content.",
+      NULL, "video",
+      { { "16:9", "16:9 Widescreen" }, { "4:3_letterbox", "4:3 Letterbox" },
+        { "4:3_panscan", "4:3 Pan & Scan" }, { NULL, NULL } },
+      "16:9"
    },
    {
       "deevee_downmix", "Downmix", NULL,
@@ -288,8 +301,10 @@ static void apply_options(dv_ctx_t *ctx, const dv_options_t *old)
                old->sub_lang[1] != ctx->opt.sub_lang[1] ||
                old->subtitles != ctx->opt.subtitles))
       dv_nav_apply_title_options(ctx, true);
-   if (old && old->aspect != ctx->opt.aspect)
+   if (old && (old->aspect != ctx->opt.aspect || old->tv_display != ctx->opt.tv_display))
       g_av.geometry.aspect_ratio = 0;   /* force a geometry update */
+   if (old && old->tv_display != ctx->opt.tv_display)
+      dv_nav_apply_display(ctx);
 }
 
 /* Returns true if anything changed. */
@@ -320,6 +335,9 @@ static bool read_options(dv_ctx_t *ctx)
              (v && !strcmp(v, "yadif2x")) ? DV_DEINT_YADIF_2X : DV_DEINT_BWDIF_2X;
    v = get_option("deevee_aspect");
    o.aspect = (v && !strcmp(v, "4:3")) ? 1 : (v && !strcmp(v, "16:9")) ? 2 : 0;
+   v = get_option("deevee_tv_display");
+   o.tv_display = (v && !strcmp(v, "4:3_letterbox")) ? DV_TV_LETTERBOX :
+                  (v && !strcmp(v, "4:3_panscan"))   ? DV_TV_PANSCAN : DV_TV_WIDE;
    v = get_option("deevee_downmix");
    o.dplii = v && !strcmp(v, "dplii");
    v = get_option("deevee_drc");
@@ -404,18 +422,11 @@ static double content_fps(const dv_ctx_t *ctx)
 }
 
 /* Tell the frontend about geometry/timing changes of the rendered picture. */
-/* Display aspect: the stream's, unless overridden by the core option. */
-static double display_aspect(const dv_ctx_t *ctx)
-{
-   return ctx->opt.aspect == 1 ? 4.0 / 3.0 :
-          ctx->opt.aspect == 2 ? 16.0 / 9.0 : ctx->render.dar;
-}
-
 static void update_av_info(dv_ctx_t *ctx)
 {
    const dv_render_t *r = &ctx->render;
    double fps = content_fps(ctx);
-   double dar = display_aspect(ctx);
+   double dar = dv_render_output_dar(ctx);
    bool timing   = fps != g_av.timing.fps;
    bool geometry = r->width  != g_av.geometry.base_width ||
                    r->height != g_av.geometry.base_height ||
@@ -530,21 +541,46 @@ RETRO_API void retro_run(void)
       }
       ctx->spu.changed = false;
 
+      if (dv_render_mode(ctx) != g_last_mode)
+      {
+         g_last_mode = dv_render_mode(ctx);
+         redraw = true;
+      }
+
       if (redraw && r->valid)
       {
+         dv_disp_t mode = g_last_mode;
          const uint32_t *frame = r->buf;
-         if (sp)
+         if (mode == DV_DISP_NORMAL || !dv_nav_overlay_native(ctx))
          {
-            dv_overlay_compose(ctx, r->buf, g_composite, r->width, r->height, sp,
-                               &ctx->highlight);
-            frame = g_composite;
+            /* Overlay on the stored picture, then (4:3 TV) transform both. */
+            if (sp)
+            {
+               dv_overlay_compose(ctx, r->buf, g_composite, r->width, r->height, sp,
+                                  &ctx->highlight);
+               frame = g_composite;
+            }
+            frame = dv_render_transform(ctx, frame, mode);
          }
+         else
+         {
+            /* Letterbox/pan&scan SPU variant: authored for the 4:3 frame. */
+            frame = dv_render_transform(ctx, r->buf, mode);
+            if (sp)
+            {
+               dv_overlay_compose(ctx, frame, g_composite, r->width, r->height, sp,
+                                  &ctx->highlight);
+               frame = g_composite;
+            }
+         }
+         g_last_frame = frame;
          video_cb(frame, r->width, r->height, r->width * sizeof(uint32_t));
       }
       else if (g_can_dupe && r->valid)
          video_cb(NULL, r->width, r->height, r->width * sizeof(uint32_t));
       else
-         video_cb(sp ? g_composite : r->buf, r->width, r->height, r->width * sizeof(uint32_t));
+         video_cb(g_last_frame ? g_last_frame : r->buf, r->width, r->height,
+                  r->width * sizeof(uint32_t));
    }
 
    output_audio(ctx);
@@ -620,7 +656,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
       {
          g_av.geometry.base_width   = g_ctx->render.width;
          g_av.geometry.base_height  = g_ctx->render.height;
-         g_av.geometry.aspect_ratio = (float)display_aspect(g_ctx);
+         g_av.geometry.aspect_ratio = (float)dv_render_output_dar(g_ctx);
          g_av.timing.fps            = content_fps(g_ctx);
       }
    }
@@ -632,6 +668,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
           g_av.geometry.aspect_ratio, g_av.timing.fps);
 
    g_audio_accum = 0.0;
+   g_last_frame  = NULL;
+   g_last_mode   = dv_render_mode(g_ctx);
    return true;
 }
 

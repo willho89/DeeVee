@@ -37,6 +37,14 @@ typedef enum
    DV_SUBS_OFF         /* forced subtitles still show */
 } dv_subs_mode_t;
 
+/* TV Display Type option (M6b, D-025): the TV the virtual player drives. */
+typedef enum
+{
+   DV_TV_WIDE = 0,     /* 16:9 */
+   DV_TV_LETTERBOX,    /* 4:3, 16:9 content letterboxed */
+   DV_TV_PANSCAN       /* 4:3, 16:9 content panned & scanned */
+} dv_tv_t;
+
 /* Core option values (CLAUDE.md §5.10), read by libretro.c. */
 typedef struct dv_options
 {
@@ -48,6 +56,7 @@ typedef struct dv_options
    bool           osd;           /* on-screen messages */
    int            deint;         /* dv_deint_t */
    int            aspect;        /* 0 auto, 1 = 4:3, 2 = 16:9 */
+   int            tv_display;    /* dv_tv_t */
    bool           dplii;         /* Pro Logic II downmix instead of plain stereo */
    int            drc;           /* 0 normal (line), 1 off, 2 night (heavy) */
    int            end_of_disc;   /* 0 restart, 1 stop, 2 close content */

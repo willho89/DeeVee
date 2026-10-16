@@ -134,6 +134,11 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES)
 	  a=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.iso 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
 	  b=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.chd 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
 	  if [ "$$a" = "$$b" ]; then echo "   $$f: CHD == ISO"; else echo "   $$f: CHD != ISO"; exit 1; fi; done
+	@echo "== TV Display Type: 16:9 picture -> 4:3 output on a 4:3 TV"
+	@for m in 16:9:1.7778 4:3_letterbox:1.3333 4:3_panscan:1.3333; do \
+	  opt=$${m%:*}; want=$${m##*:}; \
+	  HARNESS_OPT_deevee_tv_display=$$opt $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 120 $(BUILD_DIR)/system 2>/dev/null \
+	    | grep -q "^av: 720x576 .*aspect $$want" && echo "   $$opt -> $$want (ok)" || { echo "   $$opt: expected aspect $$want"; exit 1; }; done
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
 	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
 	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"

@@ -1,0 +1,130 @@
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index f24c5d3..6a4d1d4 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -1273,6 +1273,23 @@ int8_t dvdnav_get_active_spu_stream(dvdnav_t *this) {
+   return retval;
+ }
+ 
++int8_t dvdnav_get_active_spu_stream_mode(dvdnav_t *this, int32_t mode) {
++  int8_t        retval;
++
++  if(!this->started || mode < 0 || mode > 2)
++    return -1;
++
++  pthread_mutex_lock(&this->vm_lock);
++  if (!this->vm->state.pgc) {
++    pthread_mutex_unlock(&this->vm_lock);
++    return -1;
++  }
++  retval = vm_get_subp_active_stream(this->vm, mode);
++  pthread_mutex_unlock(&this->vm_lock);
++
++  return retval;
++}
++
+ dvdnav_status_t dvdnav_set_active_stream(dvdnav_t *this, uint8_t stream_num, dvdnav_stream_type_t stream_type) {
+    if (stream_type != DVD_SUBTITLE_STREAM && stream_type != DVD_AUDIO_STREAM) {
+     printerr("Invalid provided stream type");
+diff --git a/src/dvdnav/dvdnav.h b/src/dvdnav/dvdnav.h
+index 8e04742..bbfe9d5 100644
+--- a/src/dvdnav/dvdnav.h
++++ b/src/dvdnav/dvdnav.h
+@@ -167,6 +167,15 @@ DVDNAV_API const char* dvdnav_version(void);
+  */
+ DVDNAV_API dvdnav_status_t dvdnav_set_region_mask(dvdnav_t *self, int32_t region_mask);
+ 
++/*
++ * (DeeVee patch) Fix the player video configuration register (SPRM 14):
++ * tv_aspect 0 = 4:3 TV, 3 = 16:9 TV; mode 0 = normal/wide, 1 = pan&scan,
++ * 2 = letterbox. Without this call libdvdnav reports a TV matching the
++ * source aspect. Survives vm resets; set it before playback starts.
++ */
++DVDNAV_API dvdnav_status_t dvdnav_set_player_video_config(dvdnav_t *self,
++                                                          int32_t tv_aspect, int32_t mode);
++
+ /*
+  * Returns the region mask (bit 0 set implies region 1, bit 1 set implies
+  * region 2, etc) of the virtual machine.
+@@ -714,6 +723,12 @@ DVDNAV_API int8_t dvdnav_get_active_audio_stream(dvdnav_t *self);
+  */
+ DVDNAV_API int8_t dvdnav_get_active_spu_stream(dvdnav_t *self);
+ 
++/*
++ * (DeeVee patch) Active spu stream for a display mode: 0 = wide,
++ * 1 = letterbox, 2 = pan&scan (only differs from mode 0 for 16:9 video).
++ */
++DVDNAV_API int8_t dvdnav_get_active_spu_stream_mode(dvdnav_t *self, int32_t mode);
++
+ /*
+  * Get the set of user operations that are currently prohibited.
+  * There are potentially new restrictions right after
+diff --git a/src/settings.c b/src/settings.c
+index 297b812..695464f 100644
+--- a/src/settings.c
++++ b/src/settings.c
+@@ -46,6 +46,19 @@ dvdnav_status_t dvdnav_set_region_mask(dvdnav_t *this, int32_t mask) {
+   return DVDNAV_STATUS_OK;
+ }
+ 
++dvdnav_status_t dvdnav_set_player_video_config(dvdnav_t *this, int32_t tv_aspect, int32_t mode) {
++  if((tv_aspect != 0 && tv_aspect != 3) || mode < 0 || mode > 2) {
++    printerr("Passed illegal video configuration.");
++    return DVDNAV_STATUS_ERR;
++  }
++  pthread_mutex_lock(&this->vm_lock);
++  this->vm->video_config_set = 1;
++  this->vm->video_config = (uint16_t)((tv_aspect << 10) | (mode << 8));
++  this->vm->state.registers.SPRM[14] = this->vm->video_config;
++  pthread_mutex_unlock(&this->vm_lock);
++  return DVDNAV_STATUS_OK;
++}
++
+ dvdnav_status_t dvdnav_set_readahead_flag(dvdnav_t *this, int32_t use_readahead) {
+   this->use_read_ahead = use_readahead;
+   return DVDNAV_STATUS_OK;
+diff --git a/src/vm/vm.c b/src/vm/vm.c
+index 9276c91..e8d3dd3 100644
+--- a/src/vm/vm.c
++++ b/src/vm/vm.c
+@@ -389,7 +389,8 @@ int vm_reset(vm_t *vm, const char *dvdroot,
+   vm->state.registers.SPRM[16] = ('e'<<8)|'n'; /* Initial Language Code for Audio */
+   vm->state.registers.SPRM[18] = ('e'<<8)|'n'; /* Initial Language Code for Spu */
+   vm->state.registers.SPRM[20] = 0x1;          /* Player Regional Code Mask. Region free! */
+-  vm->state.registers.SPRM[14] = 0x100;        /* Try Pan&Scan */
++  vm->state.registers.SPRM[14] = vm->video_config_set ? vm->video_config
++                                                      : 0x100; /* Try Pan&Scan */
+   vm->state.registers.SPRM[15] = 0x7CFC;       /* Audio capabilities - All defined audio types */
+ 
+   vm->state.pgN                = 0;
+diff --git a/src/vm/vm.h b/src/vm/vm.h
+index bada9f0..1328816 100644
+--- a/src/vm/vm.h
++++ b/src/vm/vm.h
+@@ -79,6 +79,8 @@ typedef struct {
+   char          dvd_name[50];
+   char          dvd_serial[15];
+   int           stopped;
++  int           video_config_set; /* DeeVee: SPRM 14 fixed by the player */
++  uint16_t      video_config;
+ } vm_t;
+ 
+ /* magic number for seeking hops */
+diff --git a/src/vm/vmget.c b/src/vm/vmget.c
+index 5816f2c..f59785a 100644
+--- a/src/vm/vmget.c
++++ b/src/vm/vmget.c
+@@ -300,8 +300,11 @@ int vm_get_video_aspect(vm_t *vm) {
+     return -1;
+   }
+ 
+-  (vm->state).registers.SPRM[14] &= ~(0x3 << 10);
+-  (vm->state).registers.SPRM[14] |= aspect << 10;
++  /* Without a player-set configuration, pretend the TV matches the source. */
++  if(!vm->video_config_set) {
++    (vm->state).registers.SPRM[14] &= ~(0x3 << 10);
++    (vm->state).registers.SPRM[14] |= aspect << 10;
++  }
+ 
+   return aspect;
+ }

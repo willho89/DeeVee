@@ -68,6 +68,20 @@ static int pick_region(int32_t disc_mask)
    return 1;  /* mask 0: shouldn't happen (region 0 discs report 0xFF) */
 }
 
+/* SPRM 14 (player video configuration) from the TV Display Type option, so
+ * the disc's own programs see the TV a hardware player would report. Needs
+ * the DeeVee libdvdnav patch (patches/libdvdnav). */
+static void set_video_config(dv_ctx_t *ctx)
+{
+   static const int tv_aspect[] = { 3, 0, 0 };   /* 16:9 TV, 4:3 TV */
+   static const int mode[]      = { 0, 2, 1 };   /* normal, letterbox, pan&scan */
+   int tv = ctx->opt.tv_display;
+
+   if (dvdnav_set_player_video_config(ctx->nav.dvdnav, tv_aspect[tv], mode[tv]) != DVDNAV_STATUS_OK)
+      dv_log(ctx, RETRO_LOG_WARN, "dvdnav: set_player_video_config: %s\n",
+             dvdnav_err_to_string(ctx->nav.dvdnav));
+}
+
 bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
 {
    dv_nav_t *nav = &ctx->nav;
@@ -115,6 +129,7 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
       nav->disc_region_mask = 0xFF;
    nav->vm_region = ctx->opt.region ? ctx->opt.region : pick_region(nav->disc_region_mask);
    dvdnav_set_region_mask(nav->dvdnav, 1 << (nav->vm_region - 1));
+   set_video_config(ctx);
    if (ctx->opt.region && !(nav->disc_region_mask & (1 << (ctx->opt.region - 1))))
       dv_log(ctx, RETRO_LOG_WARN, "Region %d forced but the disc only allows mask 0x%02X: "
              "its menus may refuse to play\n", ctx->opt.region,
@@ -411,9 +426,11 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             uint32_t w = 0, h = 0;
             dvdnav_get_video_resolution(nav->dvdnav, &w, &h);
             nav->ifo_aspect = dvdnav_get_video_aspect(nav->dvdnav);
+            nav->permitted_df = dvdnav_get_video_scale_permission(nav->dvdnav);
             dv_spu_clear(ctx);
-            dv_log(ctx, RETRO_LOG_INFO, "VTS %d -> %d (domain %d), video %ux%u, aspect code %u\n",
-                   ev->old_vtsN, ev->new_vtsN, ev->new_domain, w, h, nav->ifo_aspect);
+            dv_log(ctx, RETRO_LOG_INFO, "VTS %d -> %d (domain %d), video %ux%u, aspect code %u, "
+                   "permitted display %u\n", ev->old_vtsN, ev->new_vtsN, ev->new_domain, w, h,
+                   nav->ifo_aspect, nav->permitted_df);
             break;
          }
 
@@ -449,7 +466,7 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             /* Physical stream for the current aspect; 0x80 = display off
              * (forced only). Also fires at every cell start. */
             dv_nav_apply_title_options(ctx, false);
-            dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
+            dv_spu_select(ctx, dv_nav_active_spu(ctx));
             break;
 
          case DVDNAV_HOP_CHANNEL:
@@ -568,7 +585,88 @@ void dv_nav_apply_title_options(dv_ctx_t *ctx, bool force)
    else if (o->subtitles == DV_SUBS_OFF)
       dvdnav_toggle_spu_stream(nav->dvdnav, 0);
 
-   dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
+   dv_spu_select(ctx, dv_nav_active_spu(ctx));
+}
+
+/* ---- display type (M6b, D-025) ---------------------------------------- */
+
+int dv_nav_active_spu(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   double dar;
+   dv_disp_t mode;
+   int8_t wide, alt;
+
+   nav->spu_native = false;
+   if (!nav->dvdnav)
+      return -1;
+   wide = dvdnav_get_active_spu_stream(nav->dvdnav);
+
+   /* The VM's current aspect (the stream being read), not the picture on
+    * screen: this picks what gets decoded next. */
+   dar = ctx->opt.aspect == 1 ? 4.0 / 3.0 :
+         ctx->opt.aspect == 2 ? 16.0 / 9.0 :
+         nav->ifo_aspect == 3 ? 16.0 / 9.0 : 4.0 / 3.0;
+   mode = dv_render_mode_for(ctx, dar);
+   if (mode == DV_DISP_NORMAL || wide == -1)
+      return wide;
+
+   alt = dvdnav_get_active_spu_stream_mode(nav->dvdnav, (int32_t)mode);
+   if (alt == -1)
+      return wide;
+   /* Discs without a separate variant point every mode at the wide
+    * stream; that one is drawn on the stored picture and transformed. */
+   nav->spu_native = (alt & 0x1F) != (wide & 0x1F);
+   return alt;
+}
+
+void dv_nav_apply_display(dv_ctx_t *ctx)
+{
+   if (!ctx->nav.dvdnav)
+      return;
+   set_video_config(ctx);
+   dv_spu_select(ctx, dv_nav_active_spu(ctx));
+   ctx->spu.changed = true;
+}
+
+bool dv_nav_overlay_native(dv_ctx_t *ctx)
+{
+   return ctx->nav.spu_native && dv_render_mode(ctx) != DV_DISP_NORMAL;
+}
+
+/* Button group for the picture on screen. PCIs may carry up to three groups
+ * (36/18/12 buttons each), one per display type (nav_types.h: 0 = 4:3,
+ * bit 0 wide, bit 1 letterbox, bit 2 pan&scan). libdvdnav only ever looks
+ * at group 1; its navigation links are shared by all groups on the discs
+ * seen so far, so only the highlight rectangle and hit-testing use this. */
+static int button_group(dv_ctx_t *ctx, const pci_t *pci)
+{
+   const hl_gi_t *gi = &pci->hli.hl_gi;
+   int types[3] = { gi->btngr1_dsp_ty, gi->btngr2_dsp_ty, gi->btngr3_dsp_ty };
+   int n = gi->btngr_ns, want, g;
+
+   if (n <= 1)
+      return 0;
+   if (n > 3)
+      n = 3;
+   if (dv_nav_overlay_native(ctx))
+      want = dv_render_mode(ctx) == DV_DISP_LETTERBOX ? 2 : 4;
+   else
+      want = dv_render_source_dar(ctx) > 1.5 ? 1 : 0;
+   for (g = 0; g < n; g++)
+      if (want ? (types[g] & want) != 0 : types[g] == 0)
+         return g;
+   return 0;
+}
+
+static const btni_t *group_button(dv_ctx_t *ctx, const pci_t *pci, int button)
+{
+   int n = pci->hli.hl_gi.btngr_ns;
+   int per = n == 2 ? 18 : n == 3 ? 12 : 36;
+
+   if (button <= 0 || button > pci->hli.hl_gi.btn_ns || button > per)
+      return NULL;
+   return &pci->hli.btnit[button_group(ctx, pci) * per + button - 1];
 }
 
 /* ---- menus and input (CLAUDE.md §5.5 highlight, §5.9 input) ------------ */
@@ -617,13 +715,17 @@ void dv_nav_update_highlight(dv_ctx_t *ctx)
        dvdnav_get_current_highlight(nav->dvdnav, &button) == DVDNAV_STATUS_OK &&
        button > 0)
    {
+      const btni_t *b;
       pci = dv_nav_presented_pci(ctx);
-      if (dvdnav_get_highlight_area((pci_t *)pci, button, 0, &area) == DVDNAV_STATUS_OK)
+      b = group_button(ctx, pci, button);
+      if (b && dvdnav_get_highlight_area((pci_t *)pci, button, 0, &area) == DVDNAV_STATUS_OK)
       {
          int i;
          hl.active = true;
-         hl.sx = (int)area.sx; hl.ex = (int)area.ex;
-         hl.sy = (int)area.sy; hl.ey = (int)area.ey;
+         hl.sx = (int)b->x_start; hl.ex = (int)b->x_end;
+         hl.sy = (int)b->y_start; hl.ey = (int)b->y_end;
+         if (b->btn_coln)
+            area.palette = pci->hli.btn_colit.btn_coli[b->btn_coln - 1][0];
          for (i = 0; i < 4; i++)
          {
             hl.color[i] = (uint8_t)((area.palette >> (16 + 4 * i)) & 0x0F);
@@ -912,7 +1014,7 @@ static void cycle_subtitles(dv_ctx_t *ctx)
       if (next < 0)
          dvdnav_toggle_spu_stream(nav->dvdnav, 0);
    }
-   dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
+   dv_spu_select(ctx, dv_nav_active_spu(ctx));
 
    if (next < 0)
       dv_osd(ctx, 2000, "Subtitles: off");
@@ -957,16 +1059,50 @@ void dv_nav_pointer(dv_ctx_t *ctx, int x, int y, bool activate)
    dv_nav_t *nav = &ctx->nav;
    pci_t *pci = (pci_t *)dv_nav_presented_pci(ctx);
 
+   dv_disp_t mode = dv_render_mode(ctx);
+   int b, best = 0, dist = 0x08000000;
+
    if (!nav->dvdnav || !dv_nav_has_buttons(ctx))
       return;
+   /* x, y are in the 4:3 output frame; buttons are authored either for it
+    * (letterbox/pan&scan variant) or for the stored picture. */
+   if (mode != DV_DISP_NORMAL && !dv_nav_overlay_native(ctx))
+      dv_render_unmap(ctx, mode, &x, &y);
+
+   /* As libdvdnav dvdnav_mouse_select(), but over the button group on
+    * screen: the button containing the point whose centre is nearest. */
+   for (b = 1; b <= pci->hli.hl_gi.btn_ns; b++)
+   {
+      const btni_t *bt = group_button(ctx, pci, b);
+      int dx, dy, d;
+      if (!bt || x < (int)bt->x_start || x > (int)bt->x_end ||
+          y < (int)bt->y_start || y > (int)bt->y_end)
+         continue;
+      dx = ((int)bt->x_start + (int)bt->x_end) / 2 - x;
+      dy = ((int)bt->y_start + (int)bt->y_end) / 2 - y;
+      d  = dx * dx + dy * dy;
+      if (d < dist)
+      {
+         dist = d;
+         best = b;
+      }
+   }
+   if (!best)
+      return;
+
    if (activate)
    {
-      if (dvdnav_mouse_activate(nav->dvdnav, pci, x, y) == DVDNAV_STATUS_OK)
+      if (dvdnav_button_select_and_activate(nav->dvdnav, pci, best) == DVDNAV_STATUS_OK)
       {
-         dv_log(ctx, RETRO_LOG_DEBUG, "pointer activate at %d,%d\n", x, y);
+         dv_log(ctx, RETRO_LOG_DEBUG, "pointer activate button %d at %d,%d\n", best, x, y);
          user_jump(ctx);
       }
    }
    else
-      dvdnav_mouse_select(nav->dvdnav, pci, x, y);
+   {
+      int32_t cur = 0;
+      dvdnav_get_current_highlight(nav->dvdnav, &cur);
+      if (cur != best)
+         dvdnav_button_select(nav->dvdnav, pci, best);
+   }
 }

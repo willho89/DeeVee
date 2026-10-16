@@ -41,8 +41,21 @@ $(DVD_BUILD)/.libdvdread.stamp: $(DVDCSS_STAMP)
 	$(NINJA) -C $(DVD_BUILD)/libdvdread install
 	@touch $@
 
-$(DVD_BUILD)/.libdvdnav.stamp: $(DVD_BUILD)/.libdvdread.stamp
-	$(DEPS_ENV) $(MESON) setup --reconfigure $(DVD_BUILD)/libdvdnav $(DEPS_DIR)/libdvdnav \
+# libdvdnav is built from a patched copy (patches/libdvdnav/*.patch) so the
+# submodule checkout stays pristine.
+DVDNAV_PATCHES := $(sort $(wildcard patches/libdvdnav/*.patch))
+DVDNAV_SRC     := $(DVD_BUILD)/src/libdvdnav
+
+$(DVD_BUILD)/.libdvdnav-src.stamp: $(DVDNAV_PATCHES)
+	rm -rf $(DVDNAV_SRC)
+	@mkdir -p $(DVDNAV_SRC)
+	cd $(DEPS_DIR)/libdvdnav && git archive HEAD | tar -x -C $(abspath $(DVDNAV_SRC))
+	for p in $(DVDNAV_PATCHES); do patch -d $(DVDNAV_SRC) -p1 --no-backup-if-mismatch < $$p || exit 1; done
+	@touch $@
+
+$(DVD_BUILD)/.libdvdnav.stamp: $(DVD_BUILD)/.libdvdread.stamp $(DVD_BUILD)/.libdvdnav-src.stamp
+	rm -rf $(DVD_BUILD)/libdvdnav
+	$(DEPS_ENV) $(MESON) setup $(DVD_BUILD)/libdvdnav $(DVDNAV_SRC) \
 		$(MESON_COMMON) -Denable_examples=false --wrap-mode=nofallback
 	$(NINJA) -C $(DVD_BUILD)/libdvdnav install
 	@touch $@

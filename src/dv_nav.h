@@ -56,6 +56,9 @@ typedef struct dv_nav
    int32_t disc_region_mask;  /* bit n set = region n+1 allowed */
    int32_t vm_region;         /* 1..8 chosen for the VM */
    uint8_t ifo_aspect;        /* dvdnav_get_video_aspect(): 0 = 4:3, 3 = 16:9 */
+   uint8_t permitted_df;      /* IFO: 0 LB+P&S, 1 P&S only, 2 LB only, 3 none */
+   bool    spu_native;        /* selected SPU is a letterbox/pan&scan variant,
+                               * authored for the 4:3 output frame */
 
    /* Still frame (STILL_FRAME event). */
    bool     still;
@@ -100,6 +103,17 @@ void dv_nav_service(struct dv_ctx *ctx);
  * on/off) to the current title. Runs once per title unless force is set
  * (an option changed), so the user's later choices aren't overridden. */
 void dv_nav_apply_title_options(struct dv_ctx *ctx, bool force);
+
+/* Physical SPU stream for the current display mode (dv_spu_select value);
+ * also updates nav.spu_native. */
+int dv_nav_active_spu(struct dv_ctx *ctx);
+
+/* Apply a changed TV Display Type: SPRM 14 + SPU variant. */
+void dv_nav_apply_display(struct dv_ctx *ctx);
+
+/* True if overlays are drawn on the 4:3 output frame rather than the
+ * stored picture (a letterbox/pan&scan SPU variant is on screen). */
+bool dv_nav_overlay_native(struct dv_ctx *ctx);
 
 /* PCI of the VOBU on screen (NULL if none yet). */
 const pci_t *dv_nav_presented_pci(struct dv_ctx *ctx);
