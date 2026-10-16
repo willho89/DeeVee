@@ -1,7 +1,7 @@
 # Software Information
 display_name = "Media Player (DeeVee)"
 authors = "DeeVee contributors"
-supported_extensions = "iso|ifo|img"
+supported_extensions = "iso|ifo|img|chd"
 corename = "DeeVee"
 categories = "Media Player"
 license = "GPLv2+"
@@ -21,4 +21,4 @@ needs_fullpath = "true"
 disk_control = "false"
 is_experimental = "true"
 
-description = "Plays DVD-Video (ISO images, VIDEO_TS folders, mounted discs) with full menu navigation, built on libdvdnav and FFmpeg."
+description = "Plays DVD-Video (ISO and CHD images, VIDEO_TS folders, mounted discs) with full menu navigation, built on libdvdnav and FFmpeg."

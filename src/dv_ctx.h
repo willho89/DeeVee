@@ -42,6 +42,10 @@ typedef struct dv_options
 {
    dv_subs_mode_t subtitles;
    char           sub_lang[3];   /* ISO 639-1, "" = disc default */
+   char           audio_lang[3];
+   char           menu_lang[3];
+   int            region;        /* 0 = auto (from disc), else 1..8 */
+   char           css_method[8]; /* "" = libdvdcss default, key|disc|title */
 } dv_options_t;
 
 typedef struct dv_ctx

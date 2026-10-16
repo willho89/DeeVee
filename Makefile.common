@@ -1,7 +1,17 @@
 CORE_DIR    := src
 LIBRETRO_COMM_DIR := libretro-common
 
-INCFLAGS := -I$(CORE_DIR) -I$(LIBRETRO_COMM_DIR)/include
+LIBCHDR_DIR := deps/libchdr
+
+# libchdr first: libretro-common ships an older copy of the libchdr headers.
+INCFLAGS := -I$(CORE_DIR) -I$(LIBCHDR_DIR)/include -I$(LIBRETRO_COMM_DIR)/include
+
+# libchdr (BSD-3) is compiled into the core as its single-file unity build,
+# with its own flags (third-party code: no -std=c99/-Wall).
+LIBCHDR_CFLAGS := -std=gnu11 -O2 -fPIC -fvisibility=hidden -w \
+	-I$(LIBCHDR_DIR)/include -I$(LIBCHDR_DIR)/deps/lzma-26.02/include \
+	-I$(LIBCHDR_DIR)/deps/zstd-1.5.7 -I$(LIBCHDR_DIR)/deps/miniz-3.1.2 \
+	-DZSTD_DISABLE_ASM -DWANT_RAW_DATA_SECTOR=1 -DWANT_SUBCODE=1
 
 SOURCES_C := \
 	$(CORE_DIR)/libretro.c \

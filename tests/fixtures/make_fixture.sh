@@ -16,6 +16,9 @@
 #                           green box (bottom-left)  4-6 s
 #                           yellow box (top) FORCED  7-9 s
 #            stream 1 "fr": magenta box (middle)     1-9 s
+#   region2 — region-2-only disc (VMG category patched) with an RCE-style
+#            check: First Play jumps to title 1 (GREEN) if SPRM20 == 2,
+#            otherwise title 2 (RED, "wrong region").
 set -euo pipefail
 OUT=${1:?usage: make_fixture.sh <out_dir>}
 mkdir -p "$OUT"
@@ -156,3 +159,37 @@ XML
   echo "fixture: $OUT/$name.iso"
 }
 make_subs
+
+# ---- region fixture -------------------------------------------------------
+make_region2() {
+  local name=region2
+  export VIDEO_FORMAT=NTSC
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=green:s=720x480:r=30000/1001:d=4" \
+    -f lavfi -i "anullsrc=r=48000:cl=stereo:d=4" -target ntsc-dvd -aspect 4:3 -shortest "$WORK/r_ok.mpg"
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i "color=c=red:s=720x480:r=30000/1001:d=4" \
+    -f lavfi -i "anullsrc=r=48000:cl=stereo:d=4" -target ntsc-dvd -aspect 4:3 -shortest "$WORK/r_bad.mpg"
+  cat > "$WORK/$name.xml" <<XML
+<dvdauthor dest="$OUT/$name">
+  <vmgm>
+    <fpc>if (s20 == 2) jump title 1; jump title 2;</fpc>
+  </vmgm>
+  <titleset>
+    <titles>
+      <video format="ntsc" aspect="4:3"/>
+      <audio format="ac3" lang="en"/>
+      <pgc><vob file="$WORK/r_ok.mpg"/><post>exit;</post></pgc>
+      <pgc><vob file="$WORK/r_bad.mpg"/><post>exit;</post></pgc>
+    </titles>
+  </titleset>
+</dvdauthor>
+XML
+  rm -rf "${OUT:?}/$name"
+  dvdauthor -x "$WORK/$name.xml" >/dev/null 2>&1
+  # VMG category byte 0x23: bit n set = region n+1 NOT allowed. Region 2 only.
+  for f in "$OUT/$name/VIDEO_TS/VIDEO_TS.IFO" "$OUT/$name/VIDEO_TS/VIDEO_TS.BUP"; do
+    printf '\xfd' | dd of="$f" bs=1 seek=$((0x23)) conv=notrunc status=none
+  done
+  genisoimage -quiet -dvd-video -V DEEVEE_REGION2 -o "$OUT/$name.iso" "$OUT/$name"
+  echo "fixture: $OUT/$name.iso"
+}
+make_region2

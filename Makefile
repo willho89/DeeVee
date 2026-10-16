@@ -64,7 +64,9 @@ LDFLAGS  += $(SHARED)
 LIBS     := -lm
 
 OBJ_DIR := $(BUILD_DIR)/obj-css-$(DEEVEE_CSS)
-OBJECTS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SOURCES_C))
+# Upstream unity.c omits libchdr_codec_avhuff.c (referenced by chd.c).
+LIBCHDR_OBJS := $(OBJ_DIR)/libchdr/unity.o $(OBJ_DIR)/libchdr/codec_avhuff.o
+OBJECTS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SOURCES_C)) $(LIBCHDR_OBJS)
 
 all: $(TARGET)
 
@@ -73,6 +75,14 @@ $(TARGET): $(DEPS_STAMPS) $(OBJECTS)
 
 # Objects depend on the deps being installed (headers). Order-only so a dep
 # rebuild doesn't force a full core rebuild; -MMD tracks header changes.
+$(OBJ_DIR)/libchdr/unity.o: $(LIBCHDR_DIR)/unity.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBCHDR_CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/libchdr/codec_avhuff.o: $(LIBCHDR_DIR)/src/libchdr_codec_avhuff.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LIBCHDR_CFLAGS) -c -o $@ $<
+
 $(OBJ_DIR)/%.o: %.c | $(DEPS_STAMPS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(DEPS_CFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
@@ -97,15 +107,21 @@ $(HARNESS): tests/harness.c
 
 harness: $(HARNESS)
 
-FIXTURES := $(addprefix $(FIXTURE_DIR)/,ntsc43.iso pal169.iso avs_ac3.iso avs_lpcm.iso avs_mp2.iso avs_dts.iso subs.iso)
+FIXTURES := $(addprefix $(FIXTURE_DIR)/,ntsc43.iso pal169.iso avs_ac3.iso avs_lpcm.iso avs_mp2.iso avs_dts.iso subs.iso region2.iso)
 
 $(FIXTURES) &: tests/fixtures/make_fixture.sh tests/fixtures/make_spu_png.py
 	tests/fixtures/make_fixture.sh $(FIXTURE_DIR)
 
-fixture: $(FIXTURES)
+# DVD CHDs of selected fixtures (chdman from mame-tools).
+CHD_FIXTURES := $(addprefix $(FIXTURE_DIR)/,avs_ac3.chd subs.chd)
+
+$(FIXTURE_DIR)/%.chd: $(FIXTURE_DIR)/%.iso
+	chdman createdvd -f -i $< -o $@ >/dev/null
+
+fixture: $(FIXTURES) $(CHD_FIXTURES)
 
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
-check: $(TARGET) $(HARNESS) $(FIXTURES)
+check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES)
 	@mkdir -p $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
@@ -113,5 +129,13 @@ check: $(TARGET) $(HARNESS) $(FIXTURES)
 	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
 	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
 	HARNESS_OPT_deevee_subtitles=on $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/subs.iso 650 $(BUILD_DIR)/system
+	@echo "== CHD must match ISO (video hash, audio, A/V offset)"
+	@for f in avs_ac3 subs; do \
+	  a=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.iso 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
+	  b=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.chd 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
+	  if [ "$$a" = "$$b" ]; then echo "   $$f: CHD == ISO"; else echo "   $$f: CHD != ISO"; exit 1; fi; done
+	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
+	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
+	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
 
 .PHONY: harness fixture check

@@ -82,6 +82,8 @@ RETRO_API unsigned retro_api_version(void)
 /* ---- core options (CLAUDE.md §5.10; completed in M6) ------------------- */
 
 static struct retro_core_option_v2_category g_opt_categories[] = {
+   { "disc", "Disc & Region", "Region, menu language and copy protection." },
+   { "audio", "Audio", "Audio track selection." },
    { "subtitles", "Subtitles", "Subtitle display and language." },
    { NULL, NULL, NULL },
 };
@@ -98,6 +100,41 @@ static struct retro_core_option_v2_category g_opt_categories[] = {
    { "zh", "Chinese" }, { NULL, NULL }
 
 static struct retro_core_option_v2_definition g_opt_defs[] = {
+   {
+      "deevee_region", "Player Region", NULL,
+      "Region the virtual DVD player reports to the disc. 'Auto' picks a region the disc "
+      "allows, which also passes region checks (RCE) in the disc's own menus. "
+      "Applies when content is loaded.",
+      NULL, "disc",
+      { { "auto", "Auto (from disc)" }, { "1", "1 (US, Canada)" }, { "2", "2 (Europe, Japan)" },
+        { "3", "3 (SE Asia)" }, { "4", "4 (Latin America, Oceania)" }, { "5", "5 (Africa, Russia)" },
+        { "6", "6 (China)" }, { "7", "7" }, { "8", "8" }, { NULL, NULL } },
+      "auto"
+   },
+   {
+      "deevee_menu_language", "Menu Language", NULL,
+      "Preferred language for disc menus, where the disc provides several. "
+      "Applies when content is loaded.",
+      NULL, "disc",
+      { DV_LANG_VALUES },
+      "auto"
+   },
+   {
+      "deevee_css_method", "CSS Decryption Method", NULL,
+      "How libdvdcss recovers keys for encrypted discs. 'Key' is fastest; try 'Disc' or "
+      "'Title' if an encrypted disc fails. Keys are cached in the system directory. "
+      "Applies when content is loaded.",
+      NULL, "disc",
+      { { "key", "Key (default)" }, { "disc", "Disc" }, { "title", "Title" }, { NULL, NULL } },
+      "key"
+   },
+   {
+      "deevee_audio_language", "Audio Language", NULL,
+      "Preferred audio language, applied when a title starts.",
+      NULL, "audio",
+      { DV_LANG_VALUES },
+      "auto"
+   },
    {
       "deevee_subtitles", "Subtitles", NULL,
       "Subtitle display when a title starts. 'Disc default' follows the disc. "
@@ -128,10 +165,11 @@ static void set_core_options(retro_environment_t cb)
    }
    {
       /* Legacy frontends: "Desc; default|other|...". */
-      static char desc[2][2048];
-      static struct retro_variable vars[3];
-      int i;
-      for (i = 0; i < 2; i++)
+#define DV_NUM_OPTS (sizeof(g_opt_defs) / sizeof(g_opt_defs[0]) - 1)
+      static char desc[DV_NUM_OPTS][2048];
+      static struct retro_variable vars[DV_NUM_OPTS + 1];
+      unsigned i;
+      for (i = 0; i < DV_NUM_OPTS; i++)
       {
          const struct retro_core_option_v2_definition *d = &g_opt_defs[i];
          size_t n = (size_t)snprintf(desc[i], sizeof(desc[i]), "%s; %s", d->desc, d->default_value);
@@ -142,7 +180,7 @@ static void set_core_options(retro_environment_t cb)
          vars[i].key   = d->key;
          vars[i].value = desc[i];
       }
-      vars[2].key = vars[2].value = NULL;
+      vars[DV_NUM_OPTS].key = vars[DV_NUM_OPTS].value = NULL;
       cb(RETRO_ENVIRONMENT_SET_VARIABLES, vars);
    }
 }
@@ -168,6 +206,18 @@ static bool read_options(dv_ctx_t *ctx)
    v = get_option("deevee_subtitle_language");
    if (v && strlen(v) == 2)
       memcpy(o.sub_lang, v, 3);
+   v = get_option("deevee_audio_language");
+   if (v && strlen(v) == 2)
+      memcpy(o.audio_lang, v, 3);
+   v = get_option("deevee_menu_language");
+   if (v && strlen(v) == 2)
+      memcpy(o.menu_lang, v, 3);
+   v = get_option("deevee_region");
+   if (v && v[0] >= '1' && v[0] <= '8' && !v[1])
+      o.region = v[0] - '0';
+   v = get_option("deevee_css_method");
+   if (v && (!strcmp(v, "disc") || !strcmp(v, "title")))
+      snprintf(o.css_method, sizeof(o.css_method), "%s", v);
 
    if (!memcmp(&o, &ctx->opt, sizeof(o)))
       return false;
@@ -208,7 +258,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info *info)
    memset(info, 0, sizeof(*info));
    info->library_name     = "DeeVee";
    info->library_version  = DV_VERSION " (css:" DEEVEE_CSS_MODE ")";
-   info->valid_extensions = "iso|ifo|img";
+   info->valid_extensions = "iso|ifo|img|chd";
    info->need_fullpath    = true;
    info->block_extract    = true;
 }
@@ -308,7 +358,7 @@ RETRO_API void retro_run(void)
       bool updated = false;
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated &&
           read_options(ctx))
-         dv_nav_apply_subtitle_options(ctx, true);
+         dv_nav_apply_title_options(ctx, true);
    }
 
    dv_clock_advance(&ctx->clock);
@@ -390,6 +440,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    read_options(g_ctx);
    dv_source_setup_css_env(g_ctx);
+   dv_source_setup_css_method(g_ctx);
    dv_clock_init(&g_ctx->clock, DV_FPS_NTSC);
 
    dv_overlay_init(g_ctx);

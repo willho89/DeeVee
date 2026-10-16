@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <dvdread/dvd_reader.h>
+#include <libchdr/chd.h>
 
 struct dv_ctx;
 struct retro_vfs_file_handle;
@@ -19,7 +20,7 @@ struct retro_vfs_file_handle;
 typedef enum
 {
    DV_SOURCE_NONE = 0,
-   DV_SOURCE_IMAGE,     /* .iso/.img opened through stream callbacks */
+   DV_SOURCE_IMAGE,     /* .iso/.img/.chd opened through stream callbacks */
    DV_SOURCE_DIRECTORY  /* VIDEO_TS folder / mount root, path handed to libdvdread */
 } dv_source_kind_t;
 
@@ -30,11 +31,19 @@ typedef struct dv_stream
    struct dv_ctx *ctx;
    struct retro_vfs_file_handle *vfs_fh;  /* when the frontend VFS is used */
    FILE *fp;                              /* plain-path fallback */
+
+   /* CHD: libchdr reads the container via vfs_fh/fp; we serve sectors. */
+   chd_file *chd;
+   uint8_t  *hunk;                        /* one-hunk cache */
+   int64_t   cached;                      /* hunk number in 'hunk', -1 none */
+   uint32_t  hunkbytes;
+   uint64_t  size, pos;                   /* logical bytes / read position */
 } dv_stream_t;
 
 typedef struct dv_source
 {
    dv_source_kind_t kind;
+   bool is_chd;
    char path[4096];          /* image file, or directory for libdvdread */
 } dv_source_t;
 
@@ -48,5 +57,8 @@ dvd_reader_stream_cb *dv_stream_callbacks(void);
 
 /* Point libdvdcss's key cache at <system>/deevee/dvdcss (env var only; D-003). */
 void dv_source_setup_css_env(struct dv_ctx *ctx);
+
+/* DVDCSS_METHOD from the core option (env only; D-003). */
+void dv_source_setup_css_method(struct dv_ctx *ctx);
 
 #endif

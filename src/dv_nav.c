@@ -104,15 +104,20 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
       dv_log(ctx, RETRO_LOG_WARN, "dvdnav: set_PGC_positioning_flag: %s\n",
              dvdnav_err_to_string(nav->dvdnav));
 
-   /* TODO(M5): menu/audio/SPU language + forced region from core options. */
-   dvdnav_menu_language_select(nav->dvdnav, "en");
-   dvdnav_audio_language_select(nav->dvdnav, "en");
+   /* Preference registers (SPRM 0/16/18); many discs' own programs read
+    * these to pick menus and tracks. */
+   dvdnav_menu_language_select(nav->dvdnav, ctx->opt.menu_lang[0] ? ctx->opt.menu_lang : "en");
+   dvdnav_audio_language_select(nav->dvdnav, ctx->opt.audio_lang[0] ? ctx->opt.audio_lang : "en");
    dvdnav_spu_language_select(nav->dvdnav, ctx->opt.sub_lang[0] ? ctx->opt.sub_lang : "en");
 
    if (dvdnav_get_disk_region_mask(nav->dvdnav, &nav->disc_region_mask) != DVDNAV_STATUS_OK)
       nav->disc_region_mask = 0xFF;
-   nav->vm_region = pick_region(nav->disc_region_mask);
+   nav->vm_region = ctx->opt.region ? ctx->opt.region : pick_region(nav->disc_region_mask);
    dvdnav_set_region_mask(nav->dvdnav, 1 << (nav->vm_region - 1));
+   if (ctx->opt.region && !(nav->disc_region_mask & (1 << (ctx->opt.region - 1))))
+      dv_log(ctx, RETRO_LOG_WARN, "Region %d forced but the disc only allows mask 0x%02X: "
+             "its menus may refuse to play\n", ctx->opt.region,
+             (unsigned)nav->disc_region_mask & 0xFF);
 
    return true;
 }
@@ -193,8 +198,9 @@ void dv_nav_log_disc_info(dv_ctx_t *ctx, const dv_source_t *src)
    dv_log(ctx, RETRO_LOG_INFO, "Disc volume ID : %s\n", volid ? volid : "(unknown)");
    dv_log(ctx, RETRO_LOG_INFO, "Disc title     : %s\n", title && *title ? title : "(none)");
    dv_log(ctx, RETRO_LOG_INFO, "Disc serial    : %s\n", serial && *serial ? serial : "(none)");
-   dv_log(ctx, RETRO_LOG_INFO, "Region mask    : 0x%02X (regions %s); VM region set to %d\n",
-          (unsigned)nav->disc_region_mask & 0xFF, regions, nav->vm_region);
+   dv_log(ctx, RETRO_LOG_INFO, "Region mask    : 0x%02X (regions %s); VM region set to %d%s\n",
+          (unsigned)nav->disc_region_mask & 0xFF, regions, nav->vm_region,
+          ctx->opt.region ? " (forced)" : " (auto)");
    dv_log(ctx, RETRO_LOG_INFO, "Titles         : %d\n", (int)titles);
    dv_log(ctx, RETRO_LOG_INFO, "Title sets     : %d\n", probe_vts_count(ctx, src));
 
@@ -426,7 +432,7 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
          case DVDNAV_SPU_STREAM_CHANGE:
             /* Physical stream for the current aspect; 0x80 = display off
              * (forced only). Also fires at every cell start. */
-            dv_nav_apply_subtitle_options(ctx, false);
+            dv_nav_apply_title_options(ctx, false);
             dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
             break;
 
@@ -487,7 +493,30 @@ void dv_nav_service(dv_ctx_t *ctx)
    }
 }
 
-void dv_nav_apply_subtitle_options(dv_ctx_t *ctx, bool force)
+/* Select the logical stream whose language matches (audio or subtitle). */
+static void select_by_language(dv_ctx_t *ctx, const char *lang, bool audio, int32_t title)
+{
+   dv_nav_t *nav = &ctx->nav;
+   uint16_t want = (uint16_t)((lang[0] << 8) | lang[1]);
+   int logical, n = audio ? 8 : 32;
+
+   for (logical = 0; logical < n; logical++)
+   {
+      uint16_t have = audio ? dvdnav_audio_stream_to_lang(nav->dvdnav, (uint8_t)logical)
+                            : dvdnav_spu_stream_to_lang(nav->dvdnav, (uint8_t)logical);
+      if (have != want)
+         continue;
+      if (dvdnav_set_active_stream(nav->dvdnav, (uint8_t)logical,
+                                   audio ? DVD_AUDIO_STREAM : DVD_SUBTITLE_STREAM) == DVDNAV_STATUS_OK)
+         dv_log(ctx, RETRO_LOG_INFO, "%s: title %d, '%s' = logical stream %d\n",
+                audio ? "Audio" : "Subtitles", title, lang, logical);
+      return;
+   }
+   dv_log(ctx, RETRO_LOG_INFO, "%s: title %d has no '%s' stream\n",
+          audio ? "Audio" : "Subtitles", title, lang);
+}
+
+void dv_nav_apply_title_options(dv_ctx_t *ctx, bool force)
 {
    dv_nav_t *nav = &ctx->nav;
    int32_t title = 0, part = 0;
@@ -501,22 +530,13 @@ void dv_nav_apply_subtitle_options(dv_ctx_t *ctx, bool force)
       return;
    nav->policy_title = title;
 
-   if (o->sub_lang[0])
+   if (o->audio_lang[0])
    {
-      uint16_t want = (uint16_t)((o->sub_lang[0] << 8) | o->sub_lang[1]);
-      int logical;
-      for (logical = 0; logical < 32; logical++)
-         if (dvdnav_spu_stream_to_lang(nav->dvdnav, (uint8_t)logical) == want)
-         {
-            if (dvdnav_set_active_stream(nav->dvdnav, (uint8_t)logical,
-                                         DVD_SUBTITLE_STREAM) == DVDNAV_STATUS_OK)
-               dv_log(ctx, RETRO_LOG_INFO, "Subtitles: title %d, '%s' = logical stream %d\n",
-                      title, o->sub_lang, logical);
-            break;
-         }
-      if (logical == 32)
-         dv_log(ctx, RETRO_LOG_INFO, "Subtitles: title %d has no '%s' stream\n", title, o->sub_lang);
+      select_by_language(ctx, o->audio_lang, true, title);
+      dv_audio_select(ctx, dvdnav_get_active_audio_stream(nav->dvdnav));
    }
+   if (o->sub_lang[0])
+      select_by_language(ctx, o->sub_lang, false, title);
 
    if (o->subtitles == DV_SUBS_ON)
       dvdnav_toggle_spu_stream(nav->dvdnav, 1);

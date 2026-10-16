@@ -205,7 +205,7 @@ Default RetroPad mapping (configurable later via input descriptors):
 - **Mouse/pointer:** map frontend coordinates → stored-frame coords (undo aspect & letterboxing) → `dvdnav_mouse_select(pci, x, y)` on move, `dvdnav_mouse_activate` on click/tap.
 - Pause: libretro has no pause callback to the core; implement play/pause internally (stop advancing the clock, output silence).
 ### 5.10 Core options (RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2)
-Region (Auto/1–8), Menu language, Audio language, Subtitle language, Subtitles default (auto/on/off/forced-only), Aspect (auto/4:3/16:9), Deinterlace, Audio downmix (stereo/Pro Logic II), Dynamic range compression, Parental level, End-of-disc behaviour, CSS method (key/disc/title), Show OSD.
+Region (Auto/1–8), Menu language, Audio language, Subtitle language, Subtitles default (auto/on/off — 'forced-only' merged into off, D-015), Aspect (auto/4:3/16:9), Deinterlace, Audio downmix (stereo/Pro Logic II), Dynamic range compression, ~~Parental level~~ (D-019), End-of-disc behaviour, CSS method (key/disc/title), Show OSD. Implemented so far: Region, Menu/Audio/Subtitle language, Subtitles, CSS method.
  
 ### 5.11 OSD
 Use `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` for: title/chapter on change, time on seek, audio/subtitle track name+language on change (`dvdnav_audio_stream_to_lang`, `dvdnav_spu_stream_to_lang`), CSS key retrieval progress, errors.
@@ -369,6 +369,10 @@ Re-check versions at the start of M0 and M7.
 - For automated RetroArch runs use a copied config: `cp retroarch.cfg <scratch>/ra-test.cfg`, set `audio_driver = "null"` and `config_save_on_exit = "false"` in the copy, launch with `--config <scratch>/ra-test.cfg`.
 - Harness: `HARNESS_POINTER="frame:x,y,frame:x,y:press"` (720×480 pixels) for mouse/touch tests.
 - Menu SPUs on both Tim & Eric discs: full-screen 720×478, forced, no stop, base alpha 0 (only highlights visible). CHRIMBUS buttons: 1 Play (234,399)-(262,428), 2 Special Features, 3 Setup. IDIOCRACY main menu: highlight is a yellow tint; buttons live from ~f9334 on first entry.
+- **CHD**: libchdr pinned at upstream HEAD 47d7941 (2026-10-11; newer than tag v0.3.0). Built from `unity.c` **plus** `src/libchdr_codec_avhuff.c` (missing from upstream's unity build) with its own flags; **its include dir must precede libretro-common's**, which ships an older copy of the libchdr headers. `chdman` (container package `mame-tools`, 0.264) creates test CHDs: `chdman createdvd -i x.iso -o x.chd` (hunk 4096 = 2 sectors, `DVD ` metadata). `make check` asserts CHD playback == ISO playback.
+- **Test ISOs are not CSS-encrypted** (libdvdcss DEBUG shows title keys `00:00:00:00:00` from cache): the actual decryption path is untested until an encrypted image or physical disc is available.
+- Region fixture `region2`: VMG category byte 0x23 patched to 0xFD (region 2 only) + First Play `if (s20 == 2) jump title 1; jump title 2;` (dvdauthor accepts `s20`).
+- No libdvdnav API for parental level (PTL_REG = 15 = unrestricted, set in vm_reset): parental option dropped (D-019).
 - libdvdnav exposes no VTS count; `dv_nav_log_disc_info` reads it from the VMG IFO via a short-lived libdvdread handle.
 
 ## 13. Decision log
@@ -393,6 +397,8 @@ Re-check versions at the start of M0 and M7.
 | D-016 | One subpicture per SPU packet (FFmpeg model): start = first STA/FSTA date, stop = STP date or 'until replaced'; colours/alpha/area: last value wins. CHG_COLCON skipped (M8), counted as unsupported. Overlong RLE runs clamped (VLC-tolerant) rather than rejected (FFmpeg). | Simple and matches both oracles on test content; menu SPUs with palette changes per DCSQ are rare. | Accepted (2026-10-15) |
 | D-017 | Highlight rendering follows the DVD model (§5.5): highlight palette inside the button rectangle (inclusive), the subpicture's own palette elsewhere. VLC 3 instead crops the menu SPU to the rectangle (`vout_subpictures.c` force_crop, width ex−sx) and patches all-transparent palettes. Highlights also apply to buttons in title domains (VLC: menus only). | Spec-correct; identical to VLC on discs whose menu SPU base alpha is 0 (both Tim & Eric discs). | Accepted (2026-10-15) |
 | D-018 | PCIs are queued with their timeline start; highlight, D-pad, activation and pointer use the PCI on screen, not `dvdnav_get_current_nav_pci()` (which is up to 3 s ahead after D-012). User-initiated jumps (activate, menu calls, Return, chapter skip, pointer activate, auto-action) hard-flush video/audio/SPU/PCI queues and clock horizons; disc-initiated hops keep D-010. | Buttons go live when they appear on screen; menu response is immediate instead of after 3 s of queued old content. | Accepted (2026-10-15) |
+| D-019 | Drop the Parental Level core option from §5.10. | libdvdnav has no API to set SPRM 13; changing it means reaching into private VM state (against D-001). Unrestricted (15) is the right default for a player of one's own discs. | Accepted (2026-10-15) |
+| D-020 | CHD support via libchdr (BSD-3) compiled into the core; CHD is another `dv_stream_t` backend (one-hunk cache) behind the same libdvdread stream callbacks, raw file I/O still through the libretro VFS. Only DVD CHDs (`DVD ` metadata) accepted. | User request; zero impact on the rest of the pipeline; CSS keeps working (libdvdcss stream mode). | Accepted (2026-10-15) |
  
 ---
  

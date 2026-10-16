@@ -88,9 +88,10 @@ void dv_nav_fill(struct dv_ctx *ctx, int max_blocks);
 /* Per-tick still timer and WAIT release; call after presenting video. */
 void dv_nav_service(struct dv_ctx *ctx);
 
-/* Apply the subtitle core options (language, on/off) to the current title.
- * Runs once per title unless force is set (option changed). */
-void dv_nav_apply_subtitle_options(struct dv_ctx *ctx, bool force);
+/* Apply the per-title core options (audio language, subtitle language and
+ * on/off) to the current title. Runs once per title unless force is set
+ * (an option changed), so the user's later choices aren't overridden. */
+void dv_nav_apply_title_options(struct dv_ctx *ctx, bool force);
 
 /* PCI of the VOBU on screen (NULL if none yet). */
 const pci_t *dv_nav_presented_pci(struct dv_ctx *ctx);

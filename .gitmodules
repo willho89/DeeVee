@@ -18,3 +18,7 @@
 	path = deps/ffmpeg
 	url = https://git.ffmpeg.org/ffmpeg.git
 	shallow = true
+[submodule "deps/libchdr"]
+	path = deps/libchdr
+	url = https://github.com/rtissera/libchdr.git
+	shallow = true
