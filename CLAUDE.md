@@ -20,7 +20,7 @@ Guiding rule: **don't reinvent the wheel.** The DVD virtual machine, IFO parsing
 ## 1. Scope
  
 ### In scope (v1)
-- Content: `.iso` images, `VIDEO_TS` folders (load `VIDEO_TS.IFO`), mounted physical discs (load `VIDEO_TS.IFO` from the mount; libdvdread resolves the block device for CSS).
+- Content: `.iso` images, `.chd` images (MAME `chdman createdvd` DVD CHDs), `VIDEO_TS` folders (load `VIDEO_TS.IFO`), mounted physical discs (load `VIDEO_TS.IFO` from the mount; libdvdread resolves the block device for CSS).
 - Full DVD VM: First Play PGC, root/title/chapter/audio/subtitle/angle menus, button navigation and activation, still frames, seamless branching, multi-angle, parental level, RCE discs.
 - Video: MPEG-1/MPEG-2, NTSC (720×480) and PAL (720×576) incl. 704/352 widths, 4:3 and anamorphic 16:9, letterbox/pan-scan flags, 3:2 pulldown (RFF/TFF), interlaced content.
 - Audio: AC-3, DTS, LPCM (16/20/24-bit, 48/96 kHz), MPEG-1 Layer II. Output fixed 48 kHz stereo (downmix).
@@ -43,6 +43,7 @@ Guiding rule: **don't reinvent the wheel.** The DVD virtual machine, IFO parsing
 | FFmpeg (libavcodec/libswscale/libswresample) | LGPL-2.1+ (GPL if GPL parts enabled) | Build only decoders we need. |
 | VLC modules we port from | GPL-2.0+/LGPL-2.1+ | Keep original copyright headers on ported files. |
 | libretro-common | MIT | |
+| libchdr | BSD-3-Clause | CHD reading (M5). Used by many libretro cores. |
  
 **DeeVee license: GPL-2.0-or-later.** This is compatible with everything above, lets us lift VLC code directly, and keeps RetroArch (GPLv3) distribution clean. Ported files keep the upstream copyright notice plus "Adapted for DeeVee" lines.
  
@@ -118,9 +119,10 @@ Guiding rule: **don't reinvent the wheel.** The DVD virtual machine, IFO parsing
 ## 5. Subsystem specifications
  
 ### 5.1 Content loading (dv_source.c)
-- `retro_system_info`: `valid_extensions = "iso|ifo|img"`, `need_fullpath = true`, `block_extract = true`.
+- `retro_system_info`: `valid_extensions = "iso|ifo|img|chd"`, `need_fullpath = true`, `block_extract = true`.
 - Resolution rules:
   - `*.iso` / `*.img` → open via `dvdnav_open_stream2()` with read/seek callbacks backed by the libretro VFS interface (`RETRO_ENVIRONMENT_GET_VFS_INTERFACE`), with a plain-path fallback. This makes Android SAF and sandboxed platforms work.
+  - `*.chd` → DVD CHD via **libchdr** (hunk reads behind the same `dvdnav_open_stream2()` stream callbacks; sector size 2048, `DVD ` metadata from `chdman createdvd`). Underlying file I/O goes through the libretro VFS like ISOs. CSS works unchanged (libdvdcss stream mode).
   - `VIDEO_TS.IFO` → pass the parent directory (or mount root) to `dvdnav_open2()`; libdvdread maps a mounted disc to its device so libdvdcss can authenticate.
   - Later: a tiny `.dvd` text file containing a raw device path (`/dev/sr0`, `D:`) for direct drive access without mounting.
 - Use the `_open2`/`_open_stream2` variants to route libdvdnav/libdvdread logs into `retro_log_printf`.
@@ -223,6 +225,7 @@ Use `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` for: title/chapter on change, time on se
     deps/libdvdread/     git submodule (pin 7.0.1)
     deps/libdvdnav/      git submodule (pin 7.0.0)
     deps/ffmpeg/         git submodule (pin a release tag, e.g. 7.1.x or 8.x)
+    deps/libchdr/        git submodule (M5)
     libretro-common/     git submodule
     Makefile, Makefile.common, link.T, jni/ (Android), .gitlab-ci.yml
     deevee_libretro.info
@@ -239,7 +242,7 @@ Use `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` for: title/chapter on change, time on se
   `--disable-everything --disable-programs --disable-doc --disable-network --disable-autodetect --enable-decoder=mpeg2video,mpeg1video,ac3,dca,pcm_dvd,mp1,mp2 --enable-parser=mpegvideo,ac3,dca,mpegaudio --enable-swscale --enable-swresample` (+ `--enable-avfilter --enable-filter=yadif,bwdif` at M6).
 - Symbol hygiene: export only `retro_*` (`link.T` version script), `-fvisibility=hidden`.
 - Targets (in order): Linux x86_64 → Windows (MinGW-w64) → macOS (arm64/x86_64) → Android (NDK, arm64-v8a) → others. Follow the libretro GitLab CI templates for buildbot integration (§M7).
-- `deevee_libretro.info`: `display_name = "Media Player (DeeVee)"`, `corename = "DeeVee"`, `supported_extensions = "iso|ifo|img"`, `needs_fullpath = true`, `license = "GPLv2+"`, `categories = "Media Player"`.
+- `deevee_libretro.info`: `display_name = "Media Player (DeeVee)"`, `corename = "DeeVee"`, `supported_extensions = "iso|ifo|img|chd"`, `needs_fullpath = true`, `license = "GPLv2+"`, `categories = "Media Player"`.
 ---
  
 ## 7. Milestones & acceptance criteria
@@ -262,9 +265,10 @@ Use `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` for: title/chapter on change, time on se
 - Highlight rect/palette (VLC `ButtonUpdate` port), RetroPad navigation, activation, `go_up`, menu calls, still frames (timed + infinite), WAIT, mouse/pointer.
 - Auto-action buttons and buttons spanning multiple SPU groups (letterbox/widescreen) handled.
 - **Done when:** test set menus (§8) navigate identically to VLC: correct highlight on every button, every button reachable, activation lands in the right PGC, motion menus loop with audio, still menus wait for input.
-### M5 — Region, CSS, languages, physical discs
+### M5 — Region, CSS, languages, content sources
 - Region auto/forced; RCE disc test; libdvdcss key cache; mounted physical drive path; language preference options.
-- **Done when:** an RCE region-1 disc and a region-2 disc both reach their main menus; a physical encrypted disc plays from a mounted drive on Linux and Windows.
+- **CHD support** (added 2026-10-15 at user request): libchdr submodule, `.chd` stream source, `chd` in extensions/.info.
+- **Done when:** an RCE region-1 disc and a region-2 disc both reach their main menus; a physical encrypted disc plays from a mounted drive on Linux and Windows; a DVD CHD made with `chdman createdvd` from a test ISO plays identically to the ISO (same video/audio hashes in the harness).
 ### M6 — Polish & control
 - Chapter skip, seek (VLC-style sector-based rather than pure time search), angles, OSD, deinterlace filters, aspect overrides, fast-forward behaviour, end-of-disc behaviour, core options v2 complete.
 - **Done when:** all §5.9 controls work; no seek lands more than ~2 s from target; deinterlace options visibly correct on interlaced material.
@@ -331,7 +335,7 @@ Re-check versions at the start of M0 and M7.
 | M1 Video | ☑ Done (2026-10-15) — PAL real-disc check pending | dv_ps/dv_video/dv_render/dv_clock + nav fill/service loop; VLC still handling (seq-end + vobu_se_e_ptm flush); timed/infinite stills; WAIT drains to clock; geometry/timing from first picture, SET_GEOMETRY / SET_SYSTEM_AV_INFO on change. Acceptance: IDIOCRACY 16:9 NTSC film feature 10 min (f10478→f46500) 0 drops, 0 errors, 2/3 pulldown cadence; 4:3 NTSC trailer + fixture; PAL 16:9 only on the synthetic `pal169` fixture (no real PAL disc available). TIMERIC + CHRIMBUS run clean (menus wait correctly). ~1.3 ms/tick on the Deck. **Temporary:** A = activate button / skip still (dv_nav_activate) until M4. |
 | M2 Audio/sync | ☑ Done (2026-10-15) — subjective lip-sync check by user pending | dv_audio (AC-3/DTS/LPCM/MP2 → 48 kHz stereo, decoder downmix), PTS-chunk queue + per-tick render, compressed video FIFO + per-stream read gating (D-012..D-014). A/V offset on fixtures, both sides of a cell join: LPCM 0.0–0.6 ms, AC-3 0.1–1.8 (one +6.1 at the join), MP2 −2.0–0.6, DTS = fixture's own +10.7; no clicks at cell joins. IDIOCRACY full 84-min feature (dual-layer): 0 video drops/errors/resyncs, 0 audio errors, 5 real audio discontinuities (title/menu transitions); layer break is PTS-continuous. TIMERIC/CHRIMBUS menu audio correct. Not yet: internal pause, throttle-state handling (M6). |
 | M3 SPU | ☑ Done (2026-10-15) — needs more real discs with subtitle/forced tracks | dv_spu (VLC reassembly/DCSQ port, FFmpeg RLE), dv_overlay (CLUT→RGB, blend, highlight hook for M4), core options v2 started (Subtitles auto/on/off, Subtitle Language). `subs` fixture: positions/colours exact, forced-only when off, on/off on the exact tick, language selection works. IDIOCRACY feature subtitles vs FFmpeg `-f dvdvideo` + dvdsub overlay oracle: picture MSE 0.4, subtitle-area MSE 1.5, glyph pixels identical (2582/2582). Tim & Eric discs: full-screen forced menu SPUs decode cleanly (highlights = M4). Only one real disc with title subtitles so far; no real forced-subtitle disc yet. |
-| M4 Menus | ◐ Functionally complete (2026-10-15) — user RetroArch walkthrough pending | Highlight (VLC ButtonUpdate port, D-017) on the *presented* PCI (D-018); dv_input: full §5.9 RetroPad menu set (D-pad w/ 400 ms repeat, A activate/skip still, B Return, Start root, Select title, L/R chapter), pointer hover/click; user jumps hard-flush queues (instant). Verified: CHRIMBUS 3 buttons — vs VLC (yuv vout oracle) luma identical in highlight (mean diff 0.93/255), alignment shift (0,0), only VLC's 4:2:0 chroma edges differ; IDIOCRACY highlights appear exactly when buttons go live (f9334), Play/Start/Select OK; TIMERIC pointer hover + click activate OK. Not verified: multi-group (wide/letterbox) button sets (left to libdvdnav), activation-colour flash (not shown: flush is immediate), full per-disc walkthrough vs VLC. |
+| M4 Menus | ☑ Done (2026-10-15) — user walkthrough in RetroArch passed: SPU/highlights correct on 4:3 (TIMERIC) and 16:9 (CHRIMBUS), sub-menus work, subtitle selection in the disc menu works | Highlight (VLC ButtonUpdate port, D-017) on the *presented* PCI (D-018); dv_input: full §5.9 RetroPad menu set (D-pad w/ 400 ms repeat, A activate/skip still, B Return, Start root, Select title, L/R chapter), pointer hover/click; user jumps hard-flush queues (instant). Verified: CHRIMBUS 3 buttons — vs VLC (yuv vout oracle) luma identical in highlight (mean diff 0.93/255), alignment shift (0,0), only VLC's 4:2:0 chroma edges differ; IDIOCRACY highlights appear exactly when buttons go live (f9334), Play/Start/Select OK; TIMERIC pointer hover + click activate OK. Not verified: multi-group (wide/letterbox) button sets (left to libdvdnav), activation-colour flash (not shown: flush is immediate), full per-disc walkthrough vs VLC. |
 | M5 Region/CSS | ☐ | |
 | M6 Polish | ☐ | |
 | M7 Portability | ☐ | |
