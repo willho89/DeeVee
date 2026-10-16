@@ -42,7 +42,7 @@ include Makefile.deps
 include Makefile.common
 
 PKG_CONFIG ?= pkg-config
-PKGS       := dvdnav dvdread libavcodec libswscale libswresample libavutil
+PKGS       := dvdnav dvdread libavfilter libavcodec libswscale libswresample libavutil
 ifeq ($(DEEVEE_CSS),static)
   PKGS += libdvdcss
 endif

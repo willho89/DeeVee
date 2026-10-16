@@ -49,8 +49,9 @@ $(DVD_BUILD)/.libdvdnav.stamp: $(DVD_BUILD)/.libdvdread.stamp
 
 FFMPEG_CONFIGURE := --prefix=$(FFMPEG_PREFIX) --enable-static --disable-shared --enable-pic \
 	--disable-everything --disable-programs --disable-doc --disable-network \
-	--disable-autodetect --disable-avdevice --disable-avformat --disable-avfilter \
+	--disable-autodetect --disable-avdevice --disable-avformat \
 	--enable-avcodec --enable-swscale --enable-swresample \
+	--enable-avfilter --enable-filter=yadif,bwdif,buffer,buffersink \
 	--enable-decoder=mpeg2video,mpeg1video,ac3,dca,pcm_dvd,mp1,mp2 \
 	--enable-parser=mpegvideo,ac3,dca,mpegaudio
 
