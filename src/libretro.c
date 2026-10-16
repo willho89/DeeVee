@@ -299,6 +299,9 @@ RETRO_API void retro_run(void)
    dv_render_t *r = &ctx->render;
 
    input_poll_cb();
+   /* RetroArch sets (and may replace) the input callback after
+    * retro_load_game, so never rely on one captured at load time. */
+   ctx->input.state_cb = input_state_cb;
    dv_input_run(ctx);
 
    {

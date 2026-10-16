@@ -481,7 +481,6 @@ int main(int argc, char **argv)
    p_retro_set_audio_sample(h_audio);
    p_retro_set_audio_sample_batch(h_audio_batch);
    p_retro_set_input_poll(h_poll);
-   p_retro_set_input_state(h_input);
 
    game.path = argv[2];
    if (!p_retro_load_game(&game))
@@ -491,6 +490,8 @@ int main(int argc, char **argv)
       dlclose(lib);
       return 1;
    }
+   /* Like RetroArch: the input callback arrives only after load_game. */
+   p_retro_set_input_state(h_input);
    p_retro_get_system_av_info(&av);
    printf("av: %ux%u (max %ux%u) aspect %.4f fps %.4f rate %.0f\n",
           av.geometry.base_width, av.geometry.base_height,
