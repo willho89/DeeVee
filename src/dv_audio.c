@@ -101,6 +101,13 @@ void dv_audio_flush(dv_ctx_t *ctx)
    clear_queue(a);
 }
 
+void dv_audio_reconfigure(dv_ctx_t *ctx)
+{
+   dv_audio_t *a = &ctx->audio;
+   close_decoder(a);       /* cur_id = 0: reopened by the next packet */
+   swr_free(&a->swr);
+}
+
 void dv_audio_select(dv_ctx_t *ctx, int physical)
 {
    dv_audio_t *a = &ctx->audio;
@@ -136,10 +143,18 @@ static bool open_decoder(dv_ctx_t *ctx, unsigned id)
    }
    a->avctx->thread_count = 1;
 
-   /* Let AC-3/DTS downmix themselves: they honour the stream's own centre /
-    * surround mix levels. swresample handles everything else. */
-   if (codec_id == AV_CODEC_ID_AC3 || codec_id == AV_CODEC_ID_DTS)
+   /* Stereo: let AC-3/DTS downmix themselves (they honour the stream's own
+    * centre/surround mix levels). Pro Logic II: decode all channels and let
+    * swresample matrix-encode. */
+   if ((codec_id == AV_CODEC_ID_AC3 || codec_id == AV_CODEC_ID_DTS) && !ctx->opt.dplii)
       av_dict_set(&opts, "downmix", "stereo", 0);
+   if (codec_id == AV_CODEC_ID_AC3)
+   {
+      /* Line mode (FFmpeg default 1.0), off, or heavy "RF" compression. */
+      av_dict_set(&opts, "drc_scale", ctx->opt.drc == 1 ? "0" : "1", 0);
+      if (ctx->opt.drc == 2)
+         av_dict_set(&opts, "heavy_compr", "1", 0);
+   }
 
    if (avcodec_open2(a->avctx, codec, &opts) < 0)
    {
@@ -321,6 +336,8 @@ static bool setup_swr(dv_ctx_t *ctx, const AVFrame *f)
       return false;
    /* Normalise the downmix matrix so nothing can clip. */
    av_opt_set_double(a->swr, "rematrix_maxval", 1.0, 0);
+   if (ctx->opt.dplii)
+      av_opt_set_int(a->swr, "matrix_encoding", AV_MATRIX_ENCODING_DPLII, 0);
    if (swr_init(a->swr) < 0)
    {
       swr_free(&a->swr);
@@ -330,9 +347,10 @@ static bool setup_swr(dv_ctx_t *ctx, const AVFrame *f)
    a->swr_fmt      = f->format;
    a->swr_channels = f->ch_layout.nb_channels;
    a->swr_mask     = mask;
-   dv_log(ctx, RETRO_LOG_INFO, "Audio: %d Hz, %d ch, %s -> 48000 Hz stereo s16\n",
+   dv_log(ctx, RETRO_LOG_INFO, "Audio: %d Hz, %d ch, %s -> 48000 Hz %s s16\n",
           f->sample_rate, f->ch_layout.nb_channels,
-          av_get_sample_fmt_name((enum AVSampleFormat)f->format));
+          av_get_sample_fmt_name((enum AVSampleFormat)f->format),
+          ctx->opt.dplii ? "Pro Logic II" : "stereo");
    return true;
 }
 

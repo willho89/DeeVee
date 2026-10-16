@@ -25,6 +25,7 @@ struct dv_ctx;
 typedef struct dv_pci_slot
 {
    int64_t start;      /* timeline of vobu_s_ptm */
+   int64_t ptime;      /* PGC time of this VOBU (90 kHz, dvdnav_get_current_time) */
    pci_t   pci;
 } dv_pci_slot_t;
 
@@ -40,7 +41,11 @@ typedef enum
    DV_ACT_ROOT_MENU,    /* Start */
    DV_ACT_TITLE_MENU,   /* Select */
    DV_ACT_PREV_CHAPTER, /* L */
-   DV_ACT_NEXT_CHAPTER  /* R */
+   DV_ACT_NEXT_CHAPTER, /* R */
+   DV_ACT_CYCLE_AUDIO,  /* X */
+   DV_ACT_CYCLE_SUBS,   /* Y */
+   DV_ACT_CYCLE_ANGLE,  /* L3 */
+   DV_ACT_INFO          /* Select during a title */
 } dv_action_t;
 
 typedef struct dv_nav
@@ -69,6 +74,9 @@ typedef struct dv_nav
 
    dv_pci_slot_t pcis[DV_PCI_QUEUE];
    int      pci_head, pci_count;
+   int64_t  pgc_length;       /* 90 kHz, from CELL_CHANGE */
+   int32_t  last_title, last_part;  /* for chapter OSD */
+   int64_t  seek_target;      /* last seek target, -1 = none pending (logs landing) */
 
    bool     stopped;          /* DVDNAV_STOP seen */
    uint32_t blocks;           /* BLOCK_OK packs received (stats) */
@@ -105,6 +113,19 @@ void dv_nav_update_highlight(struct dv_ctx *ctx);
 /* User input (CLAUDE.md §5.9). */
 void dv_nav_button_move(struct dv_ctx *ctx, dv_button_dir_t dir);
 void dv_nav_action(struct dv_ctx *ctx, dv_action_t act);
+/* Start the disc again from First Play (end-of-disc 'restart'). */
+bool dv_nav_restart(struct dv_ctx *ctx);
+
+/* Title time on screen (90 kHz, PGC-relative), -1 if unknown. */
+int64_t dv_nav_presented_time(struct dv_ctx *ctx);
+
+/* Seek within the current title by delta (90 kHz); VOBU-accurate via the
+ * title's time map (dvdnav_jump_to_sector_by_time). */
+void dv_nav_seek(struct dv_ctx *ctx, int64_t delta);
+
+/* True while playing a title without buttons (title controls apply). */
+bool dv_nav_in_title(struct dv_ctx *ctx);
+
 /* Pointer in stored-frame coordinates (720 x 480/576). */
 void dv_nav_pointer(struct dv_ctx *ctx, int x, int y, bool activate);
 

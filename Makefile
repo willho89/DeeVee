@@ -126,8 +126,8 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES)
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
 	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 600 $(BUILD_DIR)/system
-	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
-	HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
 	HARNESS_OPT_deevee_subtitles=on $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/subs.iso 650 $(BUILD_DIR)/system
 	@echo "== CHD must match ISO (video hash, audio, A/V offset)"
 	@for f in avs_ac3 subs; do \

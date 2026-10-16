@@ -9,6 +9,9 @@
  * compressed FIFO and are decoded only when presentation needs them.
  */
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavutil/frame.h>
 
 #include "dv_ctx.h"
@@ -49,8 +52,74 @@ bool dv_video_init(dv_ctx_t *ctx)
       dv_log(ctx, RETRO_LOG_ERROR, "Failed to open MPEG video decoder.\n");
       return false;
    }
-   v->tmp = av_frame_alloc();
-   return v->tmp != NULL;
+   v->tmp  = av_frame_alloc();
+   v->filt = av_frame_alloc();
+   return v->tmp && v->filt;
+}
+
+/* ---- deinterlacer ----------------------------------------------------- */
+
+static void graph_free(dv_video_t *v)
+{
+   avfilter_graph_free(&v->graph);
+   v->src = v->sink = NULL;
+}
+
+static bool graph_build(dv_ctx_t *ctx, const AVFrame *f)
+{
+   dv_video_t *v = &ctx->video;
+   const char *name = v->deint == DV_DEINT_BWDIF_2X ? "bwdif" : "yadif";
+   /* mode: 0 = one picture per frame, 1 = one per field.
+    * deint=interlaced: progressive (film) frames pass through untouched. */
+   const char *args_mode = v->deint == DV_DEINT_YADIF ? "mode=send_frame:deint=interlaced"
+                                                      : "mode=send_field:deint=interlaced";
+   AVFilterContext *deint = NULL;
+   char args[256];
+   int ret;
+
+   graph_free(v);
+   v->graph = avfilter_graph_alloc();
+   if (!v->graph)
+      return false;
+   v->graph->nb_threads = 1;
+
+   snprintf(args, sizeof(args),
+            "video_size=%dx%d:pix_fmt=%d:time_base=1/90000:pixel_aspect=%d/%d",
+            f->width, f->height, f->format,
+            f->sample_aspect_ratio.num ? f->sample_aspect_ratio.num : 1,
+            f->sample_aspect_ratio.den ? f->sample_aspect_ratio.den : 1);
+   ret = avfilter_graph_create_filter(&v->src, avfilter_get_by_name("buffer"), "in", args, NULL, v->graph);
+   if (ret >= 0)
+      ret = avfilter_graph_create_filter(&deint, avfilter_get_by_name(name), "deint", args_mode, NULL, v->graph);
+   if (ret >= 0)
+      ret = avfilter_graph_create_filter(&v->sink, avfilter_get_by_name("buffersink"), "out", NULL, NULL, v->graph);
+   if (ret >= 0)
+      ret = avfilter_link(v->src, 0, deint, 0);
+   if (ret >= 0)
+      ret = avfilter_link(deint, 0, v->sink, 0);
+   if (ret >= 0)
+      ret = avfilter_graph_config(v->graph, NULL);
+   if (ret < 0)
+   {
+      dv_log(ctx, RETRO_LOG_ERROR, "deinterlacer (%s) setup failed: %d\n", name, ret);
+      graph_free(v);
+      v->deint = DV_DEINT_OFF;   /* don't retry every frame */
+      return false;
+   }
+   v->graph_w   = f->width;
+   v->graph_h   = f->height;
+   v->graph_fmt = f->format;
+   dv_log(ctx, RETRO_LOG_INFO, "Deinterlacer: %s (%s)\n", name, args_mode);
+   return true;
+}
+
+void dv_video_set_deint(dv_ctx_t *ctx, dv_deint_t mode)
+{
+   dv_video_t *v = &ctx->video;
+   if (mode == v->deint)
+      return;
+   v->deint = mode;
+   graph_free(v);   /* rebuilt on the next frame */
 }
 
 static void clear_queue(dv_video_t *v)
@@ -78,6 +147,8 @@ static void clear_fifo(dv_video_t *v)
 void dv_video_free(dv_ctx_t *ctx)
 {
    dv_video_t *v = &ctx->video;
+   graph_free(v);
+   av_frame_free(&v->filt);
    clear_fifo(v);
    clear_queue(v);
    av_frame_free(&v->current.frame);
@@ -182,6 +253,7 @@ void dv_video_force_still(dv_ctx_t *ctx)
 void dv_video_flush(dv_ctx_t *ctx)
 {
    dv_video_t *v = &ctx->video;
+   graph_free(v);
    avcodec_flush_buffers(v->avctx);
    av_parser_close(v->parser);
    open_parser(v);
@@ -192,11 +264,61 @@ void dv_video_flush(dv_ctx_t *ctx)
 
 /* ---- decode ----------------------------------------------------------- */
 
-static void enqueue(dv_ctx_t *ctx, AVFrame *src)
+/* Final stage: a presentable picture with a valid timeline PTS. */
+static void queue_picture(dv_ctx_t *ctx, AVFrame *src, int64_t pts, int64_t duration)
 {
    dv_video_t *v = &ctx->video;
    dv_vframe_t *slot;
-   int64_t pts = src->pts;
+
+   if (v->qcount == DV_VIDEO_QUEUE_MAX)
+   {
+      av_frame_free(&v->queue[v->qhead].frame);
+      v->qhead = (v->qhead + 1) % DV_VIDEO_QUEUE_MAX;
+      v->qcount--;
+      v->overflow++;
+   }
+   slot = &v->queue[(v->qhead + v->qcount) % DV_VIDEO_QUEUE_MAX];
+   slot->frame = av_frame_clone(src);
+   if (!slot->frame)
+      return;
+   slot->pts      = pts;
+   slot->duration = duration;
+   v->qcount++;
+}
+
+/* Pull everything the deinterlacer has ready. */
+static void drain_filter(dv_ctx_t *ctx)
+{
+   dv_video_t *v = &ctx->video;
+   AVRational tb, tb90 = { 1, 90000 };
+
+   if (!v->sink)
+      return;
+   tb = av_buffersink_get_time_base(v->sink);
+   while (av_buffersink_get_frame(v->sink, v->filt) >= 0)
+   {
+      int64_t pts = av_rescale_q(v->filt->pts, tb, tb90);
+      queue_picture(ctx, v->filt, pts, 0);
+      av_frame_unref(v->filt);
+   }
+}
+
+/* At a still or end of stream: push out the picture the filter holds back,
+ * then start a fresh graph for whatever follows. */
+static void flush_filter(dv_ctx_t *ctx)
+{
+   dv_video_t *v = &ctx->video;
+   if (!v->src)
+      return;
+   if (av_buffersrc_add_frame(v->src, NULL) >= 0)   /* EOF: emit held picture */
+      drain_filter(ctx);
+   graph_free(v);
+}
+
+static void enqueue(dv_ctx_t *ctx, AVFrame *src)
+{
+   dv_video_t *v = &ctx->video;
+   int64_t pts = src->pts, duration;
 
    v->decoded++;
 
@@ -207,24 +329,29 @@ static void enqueue(dv_ctx_t *ctx, AVFrame *src)
       pts = v->next_pts;
       v->interpolated++;
    }
+   duration    = frame_duration(v, src);
+   v->next_pts = pts + duration;
 
-   if (v->qcount == DV_VIDEO_QUEUE_MAX)
+   if (v->deint != DV_DEINT_OFF)
    {
-      av_frame_free(&v->queue[v->qhead].frame);
-      v->qhead = (v->qhead + 1) % DV_VIDEO_QUEUE_MAX;
-      v->qcount--;
-      v->overflow++;
+      if (v->graph && (src->width != v->graph_w || src->height != v->graph_h ||
+                       src->format != v->graph_fmt))
+         flush_filter(ctx);
+      if (v->graph || graph_build(ctx, src))
+      {
+         src->pts      = pts;
+         src->duration = duration;
+         if (src->flags & AV_FRAME_FLAG_INTERLACED)
+            v->deinterlaced++;
+         if (av_buffersrc_add_frame_flags(v->src, src, AV_BUFFERSRC_FLAG_KEEP_REF) >= 0)
+         {
+            drain_filter(ctx);
+            return;
+         }
+         v->errors++;
+      }
    }
-
-   slot = &v->queue[(v->qhead + v->qcount) % DV_VIDEO_QUEUE_MAX];
-   slot->frame = av_frame_clone(src);
-   if (!slot->frame)
-      return;
-   slot->pts      = pts;
-   slot->duration = frame_duration(v, src);
-   v->qcount++;
-
-   v->next_pts = pts + slot->duration;
+   queue_picture(ctx, src, pts, duration);
 }
 
 static void receive_all(dv_ctx_t *ctx)
@@ -256,6 +383,10 @@ static void decode_one(dv_ctx_t *ctx)
    if (ret < 0 && ret != AVERROR_INVALIDDATA)
       v->errors++;
    receive_all(ctx);
+   /* The forced-still marker (a lone sequence_end_code): the decoder has
+    * just emitted its held picture; push it through the filter too. */
+   if (pkt->size == 4 && pkt->data[3] == 0xB7 && !pkt->data[0] && !pkt->data[1] && pkt->data[2] == 1)
+      flush_filter(ctx);
    av_packet_free(&pkt);
 }
 

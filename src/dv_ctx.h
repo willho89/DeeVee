@@ -45,6 +45,12 @@ typedef struct dv_options
    char           audio_lang[3];
    char           menu_lang[3];
    int            region;        /* 0 = auto (from disc), else 1..8 */
+   bool           osd;           /* on-screen messages */
+   int            deint;         /* dv_deint_t */
+   int            aspect;        /* 0 auto, 1 = 4:3, 2 = 16:9 */
+   bool           dplii;         /* Pro Logic II downmix instead of plain stereo */
+   int            drc;           /* 0 normal (line), 1 off, 2 night (heavy) */
+   int            end_of_disc;   /* 0 restart, 1 stop, 2 close content */
    char           css_method[8]; /* "" = libdvdcss default, key|disc|title */
 } dv_options_t;
 
@@ -67,10 +73,18 @@ typedef struct dv_ctx
    dv_overlay_t  overlay;
    dv_highlight_t highlight;    /* current menu button highlight */
    dv_input_t    input;
+   bool          paused;        /* user pause: clock, reading, audio stopped */
    dv_options_t  opt;
 } dv_ctx_t;
 
 void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)
+#ifdef __GNUC__
+   __attribute__((format(printf, 3, 4)))
+#endif
+   ;
+
+/* On-screen message (CLAUDE.md §5.11), honours the Show OSD option. */
+void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
 #ifdef __GNUC__
    __attribute__((format(printf, 3, 4)))
 #endif

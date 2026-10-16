@@ -74,6 +74,9 @@ void dv_audio_push(struct dv_ctx *ctx, unsigned id, const uint8_t *data, size_t 
 /* The VM's active audio stream may have changed (AUDIO_STREAM_CHANGE). */
 void dv_audio_select(struct dv_ctx *ctx, int physical);
 
+/* Downmix/DRC options changed: reopen the decoder on the next packet. */
+void dv_audio_reconfigure(struct dv_ctx *ctx);
+
 /* Drop decoder state and queued audio (stream switch, seek). */
 void dv_audio_flush(struct dv_ctx *ctx);
 

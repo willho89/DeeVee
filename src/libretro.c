@@ -72,6 +72,39 @@ void dv_log(dv_ctx_t *ctx, enum retro_log_level level, const char *fmt, ...)
    cb(level, "[DeeVee] %s", buf);
 }
 
+void dv_osd(dv_ctx_t *ctx, unsigned ms, const char *fmt, ...)
+{
+   char buf[256];
+   va_list va;
+   struct retro_message_ext msg;
+   unsigned version = 0;
+
+   va_start(va, fmt);
+   vsnprintf(buf, sizeof(buf), fmt, va);
+   va_end(va);
+   dv_log(ctx, RETRO_LOG_DEBUG, "OSD: %s\n", buf);
+   if (!ctx || !ctx->opt.osd || !environ_cb)
+      return;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &version) && version >= 1)
+   {
+      memset(&msg, 0, sizeof(msg));
+      msg.msg      = buf;
+      msg.duration = ms;
+      msg.priority = 1;
+      msg.level    = RETRO_LOG_INFO;
+      msg.target   = RETRO_MESSAGE_TARGET_OSD;
+      msg.type     = RETRO_MESSAGE_TYPE_NOTIFICATION_ALT;
+      msg.progress = -1;
+      environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &msg);
+   }
+   else
+   {
+      struct retro_message old = { buf, (unsigned)(ms * 60 / 1000) };
+      environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &old);
+   }
+}
+
 /* ---- libretro API ----------------------------------------------------- */
 
 RETRO_API unsigned retro_api_version(void)
@@ -82,8 +115,9 @@ RETRO_API unsigned retro_api_version(void)
 /* ---- core options (CLAUDE.md §5.10; completed in M6) ------------------- */
 
 static struct retro_core_option_v2_category g_opt_categories[] = {
-   { "disc", "Disc & Region", "Region, menu language and copy protection." },
-   { "audio", "Audio", "Audio track selection." },
+   { "video", "Video", "Deinterlacing and aspect ratio." },
+   { "audio", "Audio", "Audio track, downmix and dynamic range." },
+   { "disc", "Disc & Region", "Region, menu language, copy protection and end of disc." },
    { "subtitles", "Subtitles", "Subtitle display and language." },
    { NULL, NULL, NULL },
 };
@@ -100,6 +134,53 @@ static struct retro_core_option_v2_category g_opt_categories[] = {
    { "zh", "Chinese" }, { NULL, NULL }
 
 static struct retro_core_option_v2_definition g_opt_defs[] = {
+   {
+      "deevee_deinterlace", "Deinterlace", NULL,
+      "Applied only to pictures flagged as interlaced; film is untouched. Field-rate modes "
+      "show every field (smooth motion on video-shot content).",
+      NULL, "video",
+      { { "bwdif2x", "Bwdif, field rate" }, { "yadif2x", "Yadif, field rate" },
+        { "yadif", "Yadif, frame rate" }, { "off", "Off" }, { NULL, NULL } },
+      "bwdif2x"
+   },
+   {
+      "deevee_aspect", "Aspect Ratio", NULL,
+      "'Auto' uses the aspect signalled by the disc.",
+      NULL, "video",
+      { { "auto", "Auto" }, { "4:3", "4:3" }, { "16:9", "16:9" }, { NULL, NULL } },
+      "auto"
+   },
+   {
+      "deevee_downmix", "Downmix", NULL,
+      "How surround audio is folded to two channels. Pro Logic II keeps surround cues "
+      "for a matrix decoder (AV receiver).",
+      NULL, "audio",
+      { { "stereo", "Stereo" }, { "dplii", "Dolby Pro Logic II" }, { NULL, NULL } },
+      "stereo"
+   },
+   {
+      "deevee_drc", "Dynamic Range Compression", NULL,
+      "Dolby Digital loudness compression. 'Night' keeps dialogue audible at low volume.",
+      NULL, "audio",
+      { { "normal", "Normal" }, { "off", "Off (full range)" }, { "night", "Night (heavy)" },
+        { NULL, NULL } },
+      "normal"
+   },
+   {
+      "deevee_end_of_disc", "End of Disc", NULL,
+      "What to do when the disc's program ends.",
+      NULL, "disc",
+      { { "restart", "Restart disc" }, { "stop", "Stop" }, { "close", "Close content" },
+        { NULL, NULL } },
+      "restart"
+   },
+   {
+      "deevee_osd", "Show OSD", NULL,
+      "On-screen messages for chapters, seeking, track changes and pause.",
+      NULL, "disc",
+      { { "on", "On" }, { "off", "Off" }, { NULL, NULL } },
+      "on"
+   },
    {
       "deevee_region", "Player Region", NULL,
       "Region the virtual DVD player reports to the disc. 'Auto' picks a region the disc "
@@ -193,6 +274,24 @@ static const char *get_option(const char *key)
    return NULL;
 }
 
+static bool read_options(dv_ctx_t *ctx);
+
+/* Push option values into the modules that cache them. */
+static void apply_options(dv_ctx_t *ctx, const dv_options_t *old)
+{
+   dv_video_set_deint(ctx, (dv_deint_t)ctx->opt.deint);
+   if (!old || old->dplii != ctx->opt.dplii || old->drc != ctx->opt.drc)
+      dv_audio_reconfigure(ctx);   /* reopen decoder with new downmix/DRC */
+   if (old && (old->audio_lang[0] != ctx->opt.audio_lang[0] ||
+               old->audio_lang[1] != ctx->opt.audio_lang[1] ||
+               old->sub_lang[0] != ctx->opt.sub_lang[0] ||
+               old->sub_lang[1] != ctx->opt.sub_lang[1] ||
+               old->subtitles != ctx->opt.subtitles))
+      dv_nav_apply_title_options(ctx, true);
+   if (old && old->aspect != ctx->opt.aspect)
+      g_av.geometry.aspect_ratio = 0;   /* force a geometry update */
+}
+
 /* Returns true if anything changed. */
 static bool read_options(dv_ctx_t *ctx)
 {
@@ -215,6 +314,20 @@ static bool read_options(dv_ctx_t *ctx)
    v = get_option("deevee_region");
    if (v && v[0] >= '1' && v[0] <= '8' && !v[1])
       o.region = v[0] - '0';
+   v = get_option("deevee_deinterlace");
+   o.deint = (v && !strcmp(v, "off"))     ? DV_DEINT_OFF :
+             (v && !strcmp(v, "yadif"))   ? DV_DEINT_YADIF :
+             (v && !strcmp(v, "yadif2x")) ? DV_DEINT_YADIF_2X : DV_DEINT_BWDIF_2X;
+   v = get_option("deevee_aspect");
+   o.aspect = (v && !strcmp(v, "4:3")) ? 1 : (v && !strcmp(v, "16:9")) ? 2 : 0;
+   v = get_option("deevee_downmix");
+   o.dplii = v && !strcmp(v, "dplii");
+   v = get_option("deevee_drc");
+   o.drc = (v && !strcmp(v, "off")) ? 1 : (v && !strcmp(v, "night")) ? 2 : 0;
+   v = get_option("deevee_end_of_disc");
+   o.end_of_disc = (v && !strcmp(v, "stop")) ? 1 : (v && !strcmp(v, "close")) ? 2 : 0;
+   v = get_option("deevee_osd");
+   o.osd = !(v && !strcmp(v, "off"));
    v = get_option("deevee_css_method");
    if (v && (!strcmp(v, "disc") || !strcmp(v, "title")))
       snprintf(o.css_method, sizeof(o.css_method), "%s", v);
@@ -291,25 +404,33 @@ static double content_fps(const dv_ctx_t *ctx)
 }
 
 /* Tell the frontend about geometry/timing changes of the rendered picture. */
+/* Display aspect: the stream's, unless overridden by the core option. */
+static double display_aspect(const dv_ctx_t *ctx)
+{
+   return ctx->opt.aspect == 1 ? 4.0 / 3.0 :
+          ctx->opt.aspect == 2 ? 16.0 / 9.0 : ctx->render.dar;
+}
+
 static void update_av_info(dv_ctx_t *ctx)
 {
    const dv_render_t *r = &ctx->render;
    double fps = content_fps(ctx);
+   double dar = display_aspect(ctx);
    bool timing   = fps != g_av.timing.fps;
    bool geometry = r->width  != g_av.geometry.base_width ||
                    r->height != g_av.geometry.base_height ||
-                   fabs(r->dar - g_av.geometry.aspect_ratio) > 0.001;
+                   fabs(dar - g_av.geometry.aspect_ratio) > 0.001;
 
    if (!timing && !geometry)
       return;
 
    g_av.geometry.base_width   = r->width;
    g_av.geometry.base_height  = r->height;
-   g_av.geometry.aspect_ratio = (float)r->dar;
+   g_av.geometry.aspect_ratio = (float)dar;
    g_av.timing.fps            = fps;
 
    dv_log(ctx, RETRO_LOG_INFO, "Output: %ux%u, aspect %.4f, %.3f Hz\n",
-          r->width, r->height, r->dar, fps);
+          r->width, r->height, dar, fps);
 
    if (timing)
    {
@@ -339,7 +460,10 @@ static void output_audio(dv_ctx_t *ctx)
    if (frames > DV_AUDIO_MAX_TICK)
       frames = DV_AUDIO_MAX_TICK;
 
-   dv_audio_render(ctx, g_audio_buf, frames);
+   if (ctx->paused)
+      memset(g_audio_buf, 0, frames * 2 * sizeof(int16_t));
+   else
+      dv_audio_render(ctx, g_audio_buf, frames);
    audio_batch_cb(g_audio_buf, frames);
 }
 
@@ -356,16 +480,40 @@ RETRO_API void retro_run(void)
 
    {
       bool updated = false;
+      dv_options_t old = ctx->opt;
       if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated &&
           read_options(ctx))
-         dv_nav_apply_title_options(ctx, true);
+         apply_options(ctx, &old);
    }
 
-   dv_clock_advance(&ctx->clock);
-   dv_nav_fill(ctx, DV_BLOCKS_PER_RUN);
-   dv_video_present(ctx);
-   dv_nav_service(ctx);
+   /* Fast-forward: skip non-reference (B) pictures so decoding keeps up. */
+   {
+      struct retro_throttle_state th;
+      bool ff = environ_cb(RETRO_ENVIRONMENT_GET_THROTTLE_STATE, &th) &&
+                th.mode == RETRO_THROTTLE_FAST_FORWARD;
+      ctx->video.avctx->skip_frame = ff ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+   }
+
+   if (!ctx->paused)
+   {
+      dv_clock_advance(&ctx->clock);
+      dv_nav_fill(ctx, DV_BLOCKS_PER_RUN);
+      dv_video_present(ctx);
+      dv_nav_service(ctx);
+   }
    dv_nav_update_highlight(ctx);
+
+   /* End of disc (DVDNAV_STOP), once everything has been presented. */
+   if (ctx->nav.stopped && dv_video_empty(&ctx->video) && dv_clock_drained(&ctx->clock))
+   {
+      if (ctx->opt.end_of_disc == 2)
+         environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, NULL);
+      else if (ctx->opt.end_of_disc == 0)
+      {
+         dv_osd(ctx, 2000, "End of disc: restarting");
+         dv_nav_restart(ctx);
+      }
+   }
 
    {
       const dv_subpic_t *sp = dv_spu_update(ctx);
@@ -459,6 +607,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    }
 
    dv_nav_log_disc_info(g_ctx, &g_ctx->source);
+   apply_options(g_ctx, NULL);
 
    /* Prime: decode up to the first picture so the first av_info is right. */
    dv_nav_fill(g_ctx, DV_PRIME_BLOCKS);
@@ -471,7 +620,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
       {
          g_av.geometry.base_width   = g_ctx->render.width;
          g_av.geometry.base_height  = g_ctx->render.height;
-         g_av.geometry.aspect_ratio = (float)g_ctx->render.dar;
+         g_av.geometry.aspect_ratio = (float)display_aspect(g_ctx);
          g_av.timing.fps            = content_fps(g_ctx);
       }
    }

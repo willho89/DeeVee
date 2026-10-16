@@ -23,6 +23,16 @@ struct AVCodecContext;
 struct AVCodecParserContext;
 struct AVPacket;
 struct AVFrame;
+struct AVFilterGraph;
+struct AVFilterContext;
+
+typedef enum
+{
+   DV_DEINT_OFF = 0,
+   DV_DEINT_YADIF,       /* frame rate (one picture per frame) */
+   DV_DEINT_YADIF_2X,    /* field rate */
+   DV_DEINT_BWDIF_2X     /* field rate, sharper */
+} dv_deint_t;
 
 #define DV_VIDEO_QUEUE_MAX 16    /* decoded frames */
 #define DV_VIDEO_FIFO_MAX  512   /* compressed pictures (~17 s at 29.97) */
@@ -54,8 +64,15 @@ typedef struct dv_video
 
    int64_t next_pts;        /* interpolation for frames without PTS */
 
+   /* deinterlacer (libavfilter), rebuilt on format change/flush */
+   dv_deint_t deint;
+   struct AVFilterGraph   *graph;
+   struct AVFilterContext *src, *sink;
+   int graph_w, graph_h, graph_fmt;
+   struct AVFrame *filt;
+
    /* stats */
-   uint32_t decoded, presented, dropped, overflow, errors, interpolated, fifo_overflow;
+   uint32_t decoded, presented, dropped, overflow, errors, interpolated, fifo_overflow, deinterlaced;
    uint32_t cadence[8];     /* how many retro_run ticks each frame was shown */
 } dv_video_t;
 
@@ -68,6 +85,9 @@ void dv_video_push(struct dv_ctx *ctx, const uint8_t *data, size_t len, int64_t 
 /* Emit the picture held back by the parser/decoder (still frames). Ported
  * from VLC dvdnav.c DemuxForceStill(). */
 void dv_video_force_still(struct dv_ctx *ctx);
+
+/* Change the deinterlacer (core option). */
+void dv_video_set_deint(struct dv_ctx *ctx, dv_deint_t mode);
 
 /* Drop everything (seek). */
 void dv_video_flush(struct dv_ctx *ctx);

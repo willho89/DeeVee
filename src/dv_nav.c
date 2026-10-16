@@ -77,6 +77,7 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
    memset(nav, 0, sizeof(*nav));
    nav->stream.ctx    = ctx;
    nav->policy_title  = -1;
+   nav->seek_target   = -1;
 
    if (src->kind == DV_SOURCE_IMAGE)
    {
@@ -307,6 +308,7 @@ static void on_nav_packet(dv_ctx_t *ctx)
       }
       slot = &nav->pcis[(nav->pci_head + nav->pci_count) % DV_PCI_QUEUE];
       slot->start = dv_clock_to_timeline(&ctx->clock, pci->pci_gi.vobu_s_ptm);
+      slot->ptime = dvdnav_get_current_time(nav->dvdnav);
       slot->pci   = *pci;
       nav->pci_count++;
    }
@@ -417,9 +419,23 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
 
          case DVDNAV_CELL_CHANGE:
          {
+            dvdnav_cell_change_event_t *ev = (dvdnav_cell_change_event_t *)buf;
             int32_t title = 0, part = 0;
+            nav->pgc_length = ev->pgc_length;
             if (dvdnav_current_title_info(nav->dvdnav, &title, &part) == DVDNAV_STATUS_OK)
+            {
                dv_log(ctx, RETRO_LOG_DEBUG, "cell change: title %d chapter %d\n", title, part);
+               /* Announce chapter changes within titles (read-ahead means
+                * this shows a little early; good enough for an OSD). */
+               if (title > 0 && (title != nav->last_title || part != nav->last_part))
+               {
+                  int32_t parts = 0;
+                  dvdnav_get_number_of_parts(nav->dvdnav, title, &parts);
+                  dv_osd(ctx, 2000, "Title %d · Chapter %d/%d", title, part, parts);
+               }
+               nav->last_title = title;
+               nav->last_part  = part;
+            }
             break;
          }
 
@@ -472,6 +488,15 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
 void dv_nav_service(dv_ctx_t *ctx)
 {
    dv_nav_t *nav = &ctx->nav;
+
+   /* Report where a seek landed, once its first VOBU is on screen. */
+   if (nav->seek_target >= 0 && ctx->clock.anchored && nav->pci_count)
+   {
+      int64_t at = dv_nav_presented_time(ctx);
+      dv_log(ctx, RETRO_LOG_INFO, "seek landed at %.2f s (target %.2f s, error %+.2f s)\n",
+             at / 90000.0, nav->seek_target / 90000.0, (at - nav->seek_target) / 90000.0);
+      nav->seek_target = -1;
+   }
 
    /* Like VLC's ES_OUT_GET_EMPTY: everything demuxed has been presented. */
    bool drained = dv_video_empty(&ctx->video) && dv_clock_drained(&ctx->clock);
@@ -625,6 +650,7 @@ static void user_jump(dv_ctx_t *ctx)
 
    if (nav->wait)
       dvdnav_wait_skip(nav->dvdnav);
+   ctx->paused = false;
    nav->wait  = false;
    nav->still = false;
    nav->stopped = false;
@@ -664,6 +690,11 @@ void dv_nav_button_move(dv_ctx_t *ctx, dv_button_dir_t dir)
       user_jump(ctx);
 }
 
+static void cycle_audio(dv_ctx_t *ctx);
+static void cycle_subtitles(dv_ctx_t *ctx);
+static void cycle_angle(dv_ctx_t *ctx);
+static void osd_info(dv_ctx_t *ctx);
+
 static bool still_skip_if_still(dv_ctx_t *ctx)
 {
    dv_nav_t *nav = &ctx->nav;
@@ -693,6 +724,13 @@ void dv_nav_action(dv_ctx_t *ctx, dv_action_t act)
             st = dvdnav_button_activate(nav->dvdnav, pci);
          else if (still_skip_if_still(ctx))
             return;
+         else if (dvdnav_is_domain_vts(nav->dvdnav))
+         {
+            /* §5.9: A = play/pause during a title. */
+            ctx->paused = !ctx->paused;
+            dv_osd(ctx, ctx->paused ? 60000 : 1000, ctx->paused ? "❚❚ Paused" : "▶ Play");
+            return;
+         }
          break;
       case DV_ACT_GO_UP:
          name = "return";
@@ -720,6 +758,11 @@ void dv_nav_action(dv_ctx_t *ctx, dv_action_t act)
          if (dvdnav_is_domain_vts(nav->dvdnav))
             st = dvdnav_next_pg_search(nav->dvdnav);
          break;
+      /* No VM jump for these: handled and done. */
+      case DV_ACT_CYCLE_AUDIO: cycle_audio(ctx);     return;
+      case DV_ACT_CYCLE_SUBS:  cycle_subtitles(ctx); return;
+      case DV_ACT_CYCLE_ANGLE: cycle_angle(ctx);     return;
+      case DV_ACT_INFO:        osd_info(ctx);        return;
    }
 
    dv_log(ctx, RETRO_LOG_DEBUG, "action %s: %s\n", name,
@@ -730,6 +773,183 @@ void dv_nav_action(dv_ctx_t *ctx, dv_action_t act)
           dvdnav_err_to_string(nav->dvdnav));
    if (st == DVDNAV_STATUS_OK)
       user_jump(ctx);
+}
+
+bool dv_nav_restart(dv_ctx_t *ctx)
+{
+   user_jump(ctx);
+   dv_nav_close(ctx);
+   dv_spu_select(ctx, -1);
+   dv_audio_select(ctx, -1);
+   return dv_nav_open(ctx, &ctx->source);
+}
+
+int64_t dv_nav_presented_time(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   const dv_pci_slot_t *slot;
+   double into;
+
+   if (!dv_nav_presented_pci(ctx))
+      return -1;
+   slot = &nav->pcis[nav->pci_head];
+   into = ctx->clock.anchored ? ctx->clock.now - (double)slot->start : 0.0;
+   if (into < 0)
+      into = 0;
+   return slot->ptime + (int64_t)into;
+}
+
+bool dv_nav_in_title(dv_ctx_t *ctx)
+{
+   return ctx->nav.dvdnav && dvdnav_is_domain_vts(ctx->nav.dvdnav) && !dv_nav_has_buttons(ctx);
+}
+
+static void format_time(int64_t t, char *out, size_t len)
+{
+   int64_t s = t < 0 ? 0 : t / 90000;
+   snprintf(out, len, "%d:%02d:%02d", (int)(s / 3600), (int)(s / 60 % 60), (int)(s % 60));
+}
+
+void dv_nav_seek(dv_ctx_t *ctx, int64_t delta)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int64_t cur = dv_nav_presented_time(ctx), target;
+   char a[16], b[16];
+
+   if (!nav->dvdnav || !dvdnav_is_domain_vts(nav->dvdnav) || cur < 0)
+      return;
+   target = cur + delta;
+   if (target < 0)
+      target = 0;
+   if (nav->pgc_length > 90000 && target > nav->pgc_length - 90000)
+      target = nav->pgc_length - 90000;   /* stay inside the PGC */
+
+   if (dvdnav_jump_to_sector_by_time(nav->dvdnav, (uint64_t)target, 0) != DVDNAV_STATUS_OK)
+   {
+      dv_log(ctx, RETRO_LOG_WARN, "seek to %lld failed: %s\n", (long long)target,
+             dvdnav_err_to_string(nav->dvdnav));
+      return;
+   }
+   nav->seek_target = target;
+   dv_log(ctx, RETRO_LOG_DEBUG, "seek: %lld -> %lld\n", (long long)cur, (long long)target);
+   user_jump(ctx);
+   format_time(target, a, sizeof(a));
+   format_time(nav->pgc_length, b, sizeof(b));
+   dv_osd(ctx, 1500, "%s %s / %s", delta < 0 ? "◀◀" : "▶▶", a, b);
+}
+
+static void osd_audio(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int8_t phys = dvdnav_get_active_audio_stream(nav->dvdnav);
+   int8_t logical = phys >= 0 ? dvdnav_get_audio_logical_stream(nav->dvdnav, (uint8_t)phys) : -1;
+   uint16_t lang, fmt, ch;
+   const char *fname;
+
+   if (logical < 0)
+   {
+      dv_osd(ctx, 2000, "Audio: none");
+      return;
+   }
+   lang = dvdnav_audio_stream_to_lang(nav->dvdnav, (uint8_t)logical);
+   fmt  = dvdnav_audio_stream_format(nav->dvdnav, (uint8_t)logical);
+   ch   = dvdnav_audio_stream_channels(nav->dvdnav, (uint8_t)logical);
+   fname = fmt == DVD_AUDIO_FORMAT_AC3 ? "Dolby Digital" :
+           fmt == DVD_AUDIO_FORMAT_DTS ? "DTS" :
+           fmt == DVD_AUDIO_FORMAT_LPCM ? "LPCM" :
+           (fmt == DVD_AUDIO_FORMAT_MPEG2_EXT || fmt == DVD_AUDIO_FORMAT_MPEG) ? "MPEG" : "?";
+   if (lang != 0xFFFF && lang)
+      dv_osd(ctx, 2000, "Audio %d: %c%c, %s %u ch", logical + 1, lang >> 8, lang & 0xFF, fname, ch);
+   else
+      dv_osd(ctx, 2000, "Audio %d: %s %u ch", logical + 1, fname, ch);
+}
+
+/* Next logical stream the PGC allows, after 'from' (wrapping). */
+static int next_stream(dv_ctx_t *ctx, int from, int count, dvdnav_stream_type_t type, bool wrap)
+{
+   int i;
+   for (i = 1; i <= count; i++)
+   {
+      int s = from + i;
+      if (!wrap && s >= count)
+         return -1;
+      s %= count;
+      if (dvdnav_set_active_stream(ctx->nav.dvdnav, (uint8_t)s, type) == DVDNAV_STATUS_OK)
+         return s;
+   }
+   return -1;
+}
+
+static void cycle_audio(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int8_t phys = dvdnav_get_active_audio_stream(nav->dvdnav);
+   int cur = phys >= 0 ? dvdnav_get_audio_logical_stream(nav->dvdnav, (uint8_t)phys) : -1;
+   if (next_stream(ctx, cur, 8, DVD_AUDIO_STREAM, true) >= 0)
+      dv_audio_select(ctx, dvdnav_get_active_audio_stream(nav->dvdnav));
+   osd_audio(ctx);
+}
+
+/* Off -> first stream -> ... -> last stream -> off. */
+static void cycle_subtitles(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int8_t active = dvdnav_get_active_spu_stream(nav->dvdnav);
+   unsigned u = (unsigned)active & 0xFF;
+   bool shown = active != -1 && !(u & 0x80);
+   int logical = active == -1 ? -1 : dvdnav_get_spu_logical_stream(nav->dvdnav, (uint8_t)(u & 0x1F));
+   int next;
+
+   if (!shown)
+   {
+      next = next_stream(ctx, -1, 32, DVD_SUBTITLE_STREAM, false);
+      if (next >= 0)
+         dvdnav_toggle_spu_stream(nav->dvdnav, 1);
+   }
+   else
+   {
+      next = next_stream(ctx, logical, 32, DVD_SUBTITLE_STREAM, false);
+      if (next < 0)
+         dvdnav_toggle_spu_stream(nav->dvdnav, 0);
+   }
+   dv_spu_select(ctx, dvdnav_get_active_spu_stream(nav->dvdnav));
+
+   if (next < 0)
+      dv_osd(ctx, 2000, "Subtitles: off");
+   else
+   {
+      uint16_t lang = dvdnav_spu_stream_to_lang(nav->dvdnav, (uint8_t)next);
+      if (lang != 0xFFFF && lang)
+         dv_osd(ctx, 2000, "Subtitles %d: %c%c", next + 1, lang >> 8, lang & 0xFF);
+      else
+         dv_osd(ctx, 2000, "Subtitles %d", next + 1);
+   }
+}
+
+static void cycle_angle(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int32_t cur = 0, num = 0;
+   if (dvdnav_get_angle_info(nav->dvdnav, &cur, &num) != DVDNAV_STATUS_OK || num <= 1)
+   {
+      dv_osd(ctx, 1500, "Only one angle");
+      return;
+   }
+   /* Seamless: libdvdnav switches at the next interleaved unit. */
+   dvdnav_angle_change(nav->dvdnav, cur % num + 1);
+   dv_osd(ctx, 1500, "Angle %d/%d", cur % num + 1, num);
+}
+
+static void osd_info(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int32_t title = 0, part = 0, parts = 0;
+   char a[16], b[16];
+   dvdnav_current_title_info(nav->dvdnav, &title, &part);
+   dvdnav_get_number_of_parts(nav->dvdnav, title, &parts);
+   format_time(dv_nav_presented_time(ctx), a, sizeof(a));
+   format_time(nav->pgc_length, b, sizeof(b));
+   dv_osd(ctx, 3000, "Title %d · Chapter %d/%d · %s / %s", title, part, parts, a, b);
 }
 
 void dv_nav_pointer(dv_ctx_t *ctx, int x, int y, bool activate)
