@@ -376,6 +376,13 @@ Re-check versions at the start of M0 and M7.
 - No libdvdnav API for parental level (PTL_REG = 15 = unrestricted, set in vm_reset): parental option dropped (D-019).
 - libdvdnav exposes no VTS count; `dv_nav_log_disc_info` reads it from the VMG IFO via a short-lived libdvdread handle.
 
+### Next session (left off 2026-10-15)
+- M0–M6 done and committed. M6 awaits the user's RetroArch walkthrough (seek/pause/tracks/info/deinterlace on TIMERIC + IDIOCRACY).
+- **Before starting M7, ask the user which M7 items to prioritise** — several need hardware/OS access they may not have: Windows/macOS/Android builds, encrypted media + physical drive checks (carried from M5), read-ahead thread for drives, resume-point save states, GL path, buildbot/CI (repo is local-only), docs.
+- Launch command for the user (Steam RetroArch needs its runtime wrapper):
+  `cd ~/.local/share/Steam/steamapps/common/RetroArch && ~/.local/share/Steam/steamapps/common/SteamLinuxRuntime/steam-runtime/run.sh ./retroarch.sh -L /home/deck/.claude/projects/DeeVee/deevee_libretro.so <iso|chd>`
+- Build: `distrobox enter deevee-build -- make -j8` ; tests: `distrobox enter deevee-build -- make check`.
+
 ## 13. Decision log
  
 | ID | Decision | Rationale | Status |
