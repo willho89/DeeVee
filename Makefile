@@ -59,7 +59,7 @@ else ifeq ($(platform),win)
     CROSS   ?= x86_64-w64-mingw32-
     CC      := $(CROSS)gcc-posix
     AR      := $(CROSS)ar
-    RUN     ?= WINEDEBUG=-all wine
+    RUN     ?= env WINEDEBUG=-all wine
     CROSS_SYSTEM := windows
     CROSS_CPU    := x86_64
     FFMPEG_TARGET := --enable-cross-compile --cross-prefix=$(CROSS) --cc=$(CC) \
@@ -244,14 +244,7 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled
 	  && echo "$$out" | grep -qE "scrambled 1[^0-9]*$$" && echo "   scrambled.iso: alert + halt (ok)" \
 	  || { echo "   scrambled.iso: FAILED"; exit 1; }
 	@echo "== Save state: resume point in a new session lands on the saved picture; Restart re-runs First Play"
-	@HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_SAVE=400 HARNESS_DUMP=$(BUILD_DIR)/state-a HARNESS_DUMP_FRAMES=520 \
-	  $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 521 $(BUILD_DIR)/system 2>/dev/null | grep -q "serialize at frame 400: ok" \
-	  && out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_LOAD=0 \
-	    $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 200 $(BUILD_DIR)/system 2>&1) \
-	  && echo "$$out" | grep -q "unserialize at frame 0: ok" && echo "$$out" | grep -q "Resumed from save state" \
-	  && echo "   save/load (ok)" || { echo "   save/load: FAILED"; exit 1; }
-	@out=$$(HARNESS_DEBUG=1 HARNESS_RESET=300 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 330 $(BUILD_DIR)/system 2>&1); \
-	  echo "$$out" | grep -q "OSD: Restarting disc" && echo "   reset (ok)" || { echo "   reset: FAILED"; exit 1; }
+	@sh tests/check_state.sh "$(RUN_HARNESS)" ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso $(BUILD_DIR)/system
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
 	@HARNESS_DEBUG=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
 	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
