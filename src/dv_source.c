@@ -443,6 +443,44 @@ static void lib_close(void *h)
 #endif
 }
 
+#ifdef __ANDROID__
+/* Android: RetroArch's system folder is usually on shared storage, which is
+ * mounted noexec, so dlopen() refuses it. Copy the library into the folder
+ * the core itself was loaded from (app-private, where RetroArch loads cores
+ * from) and load that copy. Untested on a device (CLAUDE.md M7). */
+static bool copy_to_core_dir(dv_ctx_t *ctx, const char *src, char *dst, size_t dst_len)
+{
+   FILE *in, *out;
+   char buf[65536];
+   size_t n;
+   bool ok = true;
+
+   if (!*ctx->core_dir)
+      return false;
+   snprintf(dst, dst_len, "%s/%s", ctx->core_dir, dv_source_css_lib_name());
+   in = fopen(src, "rb");
+   if (!in)
+      return false;
+   out = fopen(dst, "wb");
+   if (!out)
+   {
+      fclose(in);
+      dv_log(ctx, RETRO_LOG_WARN, "libdvdcss: can't write %s\n", dst);
+      return false;
+   }
+   while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+      if (fwrite(buf, 1, n, out) != n)
+      {
+         ok = false;
+         break;
+      }
+   fclose(in);
+   if (fclose(out) != 0)
+      ok = false;
+   return ok;
+}
+#endif
+
 void dv_source_load_css(dv_ctx_t *ctx)
 {
    const char *name = dv_source_css_lib_name();
@@ -459,6 +497,13 @@ void dv_source_load_css(dv_ctx_t *ctx)
       snprintf(path, sizeof(path), "%s\\%s", ctx->system_dir, name);
 #else
       snprintf(path, sizeof(path), "%s/%s", ctx->system_dir, name);
+#endif
+#ifdef __ANDROID__
+      {
+         char copy[4096 + 64];
+         if (copy_to_core_dir(ctx, path, copy, sizeof(copy)))
+            snprintf(path, sizeof(path), "%s", copy);
+      }
 #endif
       ctx->css_lib = lib_open(path);
       if (ctx->css_lib)

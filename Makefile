@@ -7,6 +7,12 @@
 #   make platform=win          Windows x86_64 DLL; on Linux cross-compiles with
 #                              MinGW-w64 (CROSS=x86_64-w64-mingw32-), tests
 #                              run under Wine; build dir build/win64
+#   make platform=linux-arm64  Linux aarch64 / armhf .so, cross-compiled
+#   make platform=linux-armhf  (aarch64-linux-gnu- / arm-linux-gnueabihf-),
+#                              tests run under qemu-user
+#   make platform=android-arm64  Android arm64-v8a / armeabi-v7a
+#   make platform=android-armv7  (NDK=~/android-ndk/android-ndk-r27c, API 21);
+#                              build + link only (no Android runtime here)
 #
 # See CLAUDE.md §6 and decision D-003.
 
@@ -55,8 +61,63 @@ else ifeq ($(platform),win)
     FFMPEG_TARGET := --enable-cross-compile --cross-prefix=$(CROSS) --cc=$(CC) \
                      --target-os=mingw32 --arch=x86_64
   endif
+else ifneq ($(filter linux-arm64 linux-armhf,$(platform)),)
+  BUILD_DIR ?= build/$(platform)
+  # Same file name as the native core: keep it in the build dir so it never
+  # replaces the host's deevee_libretro.so.
+  TARGET  := $(BUILD_DIR)/$(TARGET_NAME)_libretro.so
+  SHARED  := -shared -Wl,--version-script=link.T -Wl,--no-undefined
+  HOST_LIBS := -ldl
+  ifeq ($(platform),linux-arm64)
+    CROSS        ?= aarch64-linux-gnu-
+    CROSS_CPU    := aarch64
+    FFMPEG_ARCH  := aarch64
+    RUN          ?= qemu-aarch64 -L /usr/aarch64-linux-gnu
+  else
+    CROSS        ?= arm-linux-gnueabihf-
+    CROSS_CPU    := arm
+    FFMPEG_ARCH  := arm
+    RUN          ?= qemu-arm -L /usr/arm-linux-gnueabihf
+    # GCC 7.1 ABI note on packed bitfields (libdvdread's nav_types.h): every
+    # object here is built by the same compiler, so it doesn't apply.
+    HOST_CFLAGS  := -Wno-psabi
+  endif
+  CC      := $(CROSS)gcc
+  AR      := $(CROSS)ar
+  # Keep the oldest symbol versions for distros older than the build's
+  # glibc (see src/dv_glibc_compat.c).
+  EXTRA_SOURCES := src/dv_glibc_compat.c
+  SHARED  += -Wl,--wrap=fmod
+  CROSS_SYSTEM  := linux
+  FFMPEG_TARGET := --enable-cross-compile --cross-prefix=$(CROSS) --cc=$(CC) \
+                   --target-os=linux --arch=$(FFMPEG_ARCH)
+else ifneq ($(filter android-arm64 android-armv7,$(platform)),)
+  NDK       ?= $(HOME)/android-ndk/android-ndk-r27c
+  NDK_BIN   := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin
+  BUILD_DIR ?= build/$(platform)
+  TARGET    := $(BUILD_DIR)/$(TARGET_NAME)_libretro_android.so
+  # --as-needed: FFmpeg's configure always adds -landroid -lmediandk on
+  # Android; nothing we build uses them.
+  SHARED    := -shared -Wl,--version-script=link.T -Wl,--no-undefined -Wl,--as-needed
+  ifeq ($(platform),android-arm64)
+    CC          := $(NDK_BIN)/aarch64-linux-android21-clang
+    CROSS_CPU   := aarch64
+    FFMPEG_ARCH := --arch=aarch64
+  else
+    CC          := $(NDK_BIN)/armv7a-linux-androideabi21-clang
+    CROSS_CPU   := arm
+    FFMPEG_ARCH := --arch=arm --cpu=armv7-a
+  endif
+  AR      := $(NDK_BIN)/llvm-ar
+  STRIP   := $(NDK_BIN)/llvm-strip
+  CROSS_SYSTEM  := android
+  # No MediaCodec/JNI: DeeVee decodes in software; keeps libmediandk out.
+  FFMPEG_TARGET := --enable-cross-compile --target-os=android $(FFMPEG_ARCH) --cc=$(CC) \
+                   --disable-mediacodec --disable-jni \
+                   --ar=$(AR) --nm=$(NDK_BIN)/llvm-nm --ranlib=$(NDK_BIN)/llvm-ranlib \
+                   --strip=$(STRIP)
 else
-  $(error unknown platform '$(platform)' (unix, osx, win))
+  $(error unknown platform '$(platform)' (unix, osx, win, linux-arm64, linux-armhf, android-arm64, android-armv7))
 endif
 
 include Makefile.deps
@@ -82,7 +143,7 @@ else
   OPTFLAGS := -O2 -g
 endif
 
-CFLAGS   += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC -fvisibility=hidden $(OPTFLAGS)
+CFLAGS   += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC -fvisibility=hidden $(OPTFLAGS) $(HOST_CFLAGS)
 CPPFLAGS += $(INCFLAGS) $(CSS_DEFINE) -D_POSIX_C_SOURCE=200809L
 LDFLAGS  += $(SHARED)
 LIBS     := -lm
@@ -90,7 +151,7 @@ LIBS     := -lm
 OBJ_DIR := $(BUILD_DIR)/obj-css-$(DEEVEE_CSS)
 # Upstream unity.c omits libchdr_codec_avhuff.c (referenced by chd.c).
 LIBCHDR_OBJS := $(OBJ_DIR)/libchdr/unity.o $(OBJ_DIR)/libchdr/codec_avhuff.o
-OBJECTS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SOURCES_C)) $(LIBCHDR_OBJS)
+OBJECTS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SOURCES_C) $(EXTRA_SOURCES)) $(LIBCHDR_OBJS)
 
 all: $(TARGET)
 

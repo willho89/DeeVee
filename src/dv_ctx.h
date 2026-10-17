@@ -70,6 +70,7 @@ typedef struct dv_ctx
    struct retro_vfs_interface *vfs;   /* NULL if frontend has no VFS v1+ */
 
    char system_dir[4096];
+   char core_dir[4096];   /* folder the core was loaded from ("" if unknown) */
    dv_css_t css;          /* where CSS decryption comes from (D-024) */
    void    *css_lib;      /* our handle on a dlopen()ed libdvdcss */
    bool     css_blocked;  /* encrypted data we can't decrypt: playback halted */

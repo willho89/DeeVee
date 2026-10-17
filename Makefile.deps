@@ -19,7 +19,7 @@ MESON_COMMON  := --buildtype=release --default-library=static \
 # Meson cross file for the CROSS toolchain (platform=win from Linux, ...).
 $(MESON_CROSS_FILE):
 	@mkdir -p $(dir $@)
-	printf '%s\n' "[binaries]" "c = '$(CC)'" "ar = '$(AR)'" "strip = '$(CROSS)strip'" \
+	printf '%s\n' "[binaries]" "c = '$(CC)'" "ar = '$(AR)'" "strip = '$(or $(STRIP),$(CROSS)strip)'" \
 	  "windres = '$(CROSS)windres'" "pkg-config = 'pkg-config'" \
 	  "[host_machine]" "system = '$(CROSS_SYSTEM)'" "cpu_family = '$(CROSS_CPU)'" \
 	  "cpu = '$(CROSS_CPU)'" "endian = 'little'" > $@

@@ -633,6 +633,23 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &sysdir) && sysdir)
       snprintf(g_ctx->system_dir, sizeof(g_ctx->system_dir), "%s", sysdir);
+   {
+      const char *core_path = NULL;
+      if (environ_cb(RETRO_ENVIRONMENT_GET_LIBRETRO_PATH, &core_path) && core_path)
+      {
+         char *slash;
+         snprintf(g_ctx->core_dir, sizeof(g_ctx->core_dir), "%s", core_path);
+         slash = strrchr(g_ctx->core_dir, '/');
+#ifdef _WIN32
+         if (!slash || strrchr(g_ctx->core_dir, '\\') > slash)
+            slash = strrchr(g_ctx->core_dir, '\\');
+#endif
+         if (slash)
+            *slash = '\0';
+         else
+            g_ctx->core_dir[0] = '\0';
+      }
+   }
 
    dv_log(g_ctx, RETRO_LOG_INFO, "DeeVee %s (css:%s), VFS %s\n", DV_VERSION,
           DEEVEE_CSS_MODE, g_ctx->vfs ? "available" : "unavailable (stdio fallback)");
