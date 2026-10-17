@@ -1,0 +1,180 @@
+diff --git a/src/dvdnav.c b/src/dvdnav.c
+index 6a4d1d4..57683da 100644
+--- a/src/dvdnav.c
++++ b/src/dvdnav.c
+@@ -1485,3 +1485,144 @@ user_ops_t dvdnav_get_restrictions(dvdnav_t* this) {
+ const char* dvdnav_version(void) {
+     return VERSION;
+ }
++
++/* ---- (DeeVee patch) VM state save/restore ------------------------------ */
++
++#define STATE_MAGIC   0x44565331u   /* "DVS1" */
++
++static void put16(uint8_t **p, uint16_t v) { (*p)[0] = v & 0xff; (*p)[1] = v >> 8; *p += 2; }
++static void put32(uint8_t **p, uint32_t v) { put16(p, v & 0xffff); put16(p, v >> 16); }
++static uint16_t get16(const uint8_t **p) { uint16_t v = (*p)[0] | ((*p)[1] << 8); *p += 2; return v; }
++static uint32_t get32(const uint8_t **p) { uint32_t lo = get16(p); return lo | ((uint32_t)get16(p) << 16); }
++
++dvdnav_status_t dvdnav_get_state(dvdnav_t *this, uint32_t presented_lbn,
++                                 uint8_t *state, int32_t size) {
++  uint8_t *p = state;
++  const dvd_state_t *s;
++  struct timeval now;
++  int32_t blockN;
++  int i;
++
++  if (!state || size < DVDNAV_STATE_SIZE)
++    return DVDNAV_STATUS_ERR;
++  pthread_mutex_lock(&this->vm_lock);
++  s = &this->vm->state;
++  if (!this->started || !s->pgc) {
++    pthread_mutex_unlock(&this->vm_lock);
++    printerr("Virtual DVD machine not started.");
++    return DVDNAV_STATUS_ERR;
++  }
++  blockN = s->blockN;
++  if (presented_lbn && s->cellN >= 1 && s->cellN <= s->pgc->nr_of_cells) {
++    const cell_playback_t *cell = &s->pgc->cell_playback[s->cellN - 1];
++    if (presented_lbn >= cell->first_sector && presented_lbn <= cell->last_sector)
++      blockN = presented_lbn - cell->first_sector;
++  }
++  gettimeofday(&now, NULL);
++
++  memset(state, 0, DVDNAV_STATE_SIZE);
++  put32(&p, STATE_MAGIC);
++  put16(&p, s->domain);
++  put16(&p, s->vtsN);
++  put16(&p, s->pgcN);
++  put16(&p, s->pgN);
++  put16(&p, s->cellN);
++  put32(&p, blockN);
++  for (i = 0; i < 24; i++)
++    put16(&p, s->registers.SPRM[i]);
++  for (i = 0; i < 16; i++) {
++    put16(&p, s->registers.GPRM[i]);
++    *p++ = s->registers.GPRM_mode[i];
++    /* counter mode: seconds since the counter was set */
++    put32(&p, (s->registers.GPRM_mode[i] & 1) ?
++               (uint32_t)(now.tv_sec - s->registers.GPRM_time[i].tv_sec) : 0);
++  }
++  put16(&p, s->rsm_vtsN);
++  put32(&p, s->rsm_blockN);
++  for (i = 0; i < 5; i++)
++    put16(&p, s->rsm_regs[i]);
++  put16(&p, s->rsm_pgcN);
++  put16(&p, s->rsm_cellN);
++  pthread_mutex_unlock(&this->vm_lock);
++  return DVDNAV_STATUS_OK;
++}
++
++dvdnav_status_t dvdnav_set_state(dvdnav_t *this, const uint8_t *state, int32_t size) {
++  const uint8_t *p = state;
++  vm_t *vm = this->vm;
++  dvd_state_t *s = &vm->state;
++  int domain, vtsN, pgcN, pgN, cellN, i;
++  uint32_t blockN;
++  uint16_t sprm[24];
++  struct timeval now;
++
++  if (!state || size < DVDNAV_STATE_SIZE || get32(&p) != STATE_MAGIC) {
++    printerr("Not a DVD VM state.");
++    return DVDNAV_STATUS_ERR;
++  }
++  domain = get16(&p);
++  vtsN   = get16(&p);
++  pgcN   = get16(&p);
++  pgN    = get16(&p);
++  cellN  = get16(&p);
++  blockN = get32(&p);
++  if (domain != DVD_DOMAIN_FirstPlay && domain != DVD_DOMAIN_VTSTitle &&
++      domain != DVD_DOMAIN_VMGM && domain != DVD_DOMAIN_VTSMenu) {
++    printerr("Bad domain in VM state.");
++    return DVDNAV_STATUS_ERR;
++  }
++
++  pthread_mutex_lock(&this->vm_lock);
++  if (!this->started) {
++    if (!vm_start(vm)) {
++      pthread_mutex_unlock(&this->vm_lock);
++      printerr("Can't start the VM.");
++      return DVDNAV_STATUS_ERR;
++    }
++    this->started = 1;
++  }
++  if ((domain == DVD_DOMAIN_VTSTitle || domain == DVD_DOMAIN_VTSMenu) &&
++      !ifoOpenNewVTSI(vm, vm->dvd, vtsN)) {
++    pthread_mutex_unlock(&this->vm_lock);
++    printerr("Can't open the saved VTS.");
++    return DVDNAV_STATUS_ERR;
++  }
++  s->domain = domain;
++  if (!set_PGCN(vm, pgcN) || cellN < 1 || cellN > s->pgc->nr_of_cells) {
++    pthread_mutex_unlock(&this->vm_lock);
++    printerr("Saved PGC/cell not on this disc.");
++    return DVDNAV_STATUS_ERR;
++  }
++
++  /* Disc registers. SPRM 0 and 12-23 are player settings: keep ours. */
++  for (i = 0; i < 24; i++)
++    sprm[i] = get16(&p);
++  for (i = 1; i <= 11; i++)
++    s->registers.SPRM[i] = sprm[i];
++  gettimeofday(&now, NULL);
++  for (i = 0; i < 16; i++) {
++    uint32_t elapsed;
++    s->registers.GPRM[i] = get16(&p);
++    s->registers.GPRM_mode[i] = *p++;
++    elapsed = get32(&p);
++    s->registers.GPRM_time[i].tv_sec  = now.tv_sec - elapsed;
++    s->registers.GPRM_time[i].tv_usec = now.tv_usec;
++  }
++  s->rsm_vtsN   = get16(&p);
++  s->rsm_blockN = get32(&p);
++  for (i = 0; i < 5; i++)
++    s->rsm_regs[i] = get16(&p);
++  s->rsm_pgcN   = get16(&p);
++  s->rsm_cellN  = get16(&p);
++
++  s->pgN = pgN;
++  vm_jump_cell_block(vm, cellN, blockN);
++
++  /* As a seek: leave any still/wait, forget the NAV filter. */
++  this->position_current.still = 0;
++  this->sync_wait = 0;
++  this->last_cmd_nav_lbn = SRI_END_OF_CELL;
++  vm->hop_channel += HOP_SEEK;
++  pthread_mutex_unlock(&this->vm_lock);
++  return DVDNAV_STATUS_OK;
++}
+diff --git a/src/dvdnav/dvdnav.h b/src/dvdnav/dvdnav.h
+index bbfe9d5..a27ab48 100644
+--- a/src/dvdnav/dvdnav.h
++++ b/src/dvdnav/dvdnav.h
+@@ -723,6 +723,26 @@ DVDNAV_API int8_t dvdnav_get_active_audio_stream(dvdnav_t *self);
+  */
+ DVDNAV_API int8_t dvdnav_get_active_spu_stream(dvdnav_t *self);
+ 
++/*
++ * (DeeVee patch) VM state save/restore, for resume points / save states.
++ * The state is a portable byte string of DVDNAV_STATE_SIZE bytes: domain,
++ * VTS, PGC, program, cell and block plus the disc's registers (SPRM 1-11,
++ * all GPRMs incl. counter mode) and resume information. Player settings
++ * (languages, region, parental level, video/audio configuration) are not
++ * part of it and stay as set.
++ *
++ * dvdnav_get_state(): presented_lbn, if not 0, is the NAV pack (PCI
++ * nv_pck_lbn) of the VOBU the application is showing; when it lies in the
++ * current cell it replaces the read position, so a read-ahead application
++ * resumes at what was on screen.
++ * dvdnav_set_state(): jumps to the saved cell/VOBU without running PGC
++ * pre-commands; HOP_CHANNEL, VTS/CELL changes etc. follow as for a seek.
++ */
++#define DVDNAV_STATE_SIZE 256
++DVDNAV_API dvdnav_status_t dvdnav_get_state(dvdnav_t *self, uint32_t presented_lbn,
++                                            uint8_t *state, int32_t size);
++DVDNAV_API dvdnav_status_t dvdnav_set_state(dvdnav_t *self, const uint8_t *state, int32_t size);
++
+ /*
+  * (DeeVee patch) Active spu stream for a display mode: 0 = wide,
+  * 1 = letterbox, 2 = pan&scan (only differs from mode 0 for 16:9 video).

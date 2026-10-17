@@ -8,7 +8,9 @@
 #
 #   vlc_nav.py <iso> "<t>:<KEY>,<t>:<KEY>,..." [end_seconds] [--frames]
 #
-# ORACLE_OUT=<dir> (default build/vlc), ORACLE_RETRIES=<n> (default 2).
+# ORACLE_OUT=<dir> (default build/vlc), ORACLE_RETRIES=<n> (default 2),
+# ORACLE_CORE=<core.so> (default ./deevee_libretro.so; use a copy to keep
+# building while a batch runs).
 #
 # KEY: UP DOWN LEFT RIGHT A (activate). t in seconds from start.
 # --frames also compares the last picture (luma MSE) of both.
@@ -49,7 +51,8 @@ def run_deevee(iso, steps, end, frames):
         env["HARNESS_DUMP_FRAMES"] = str(nframes - 1)
     cmd = ["distrobox", "enter", "deevee-build", "--", "env"] + \
           ["%s=%s" % kv for kv in env.items() if kv[0].startswith("HARNESS")] + \
-          ["build/harness", "./deevee_libretro.so", iso, str(nframes), "build/system"]
+          ["build/harness", os.environ.get("ORACLE_CORE", "./deevee_libretro.so"), iso,
+           str(nframes), "build/system"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     log = r.stderr + r.stdout
     events = []

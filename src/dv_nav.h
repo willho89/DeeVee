@@ -56,6 +56,8 @@ typedef struct dv_nav
    int32_t disc_region_mask;  /* bit n set = region n+1 allowed */
    int32_t vm_region;         /* 1..8 chosen for the VM */
    uint8_t ifo_aspect;        /* dvdnav_get_video_aspect(): 0 = 4:3, 3 = 16:9 */
+   uint8_t disc_id[16];       /* libdvdread DVDDiscID (MD5 of the IFOs) */
+   bool    have_disc_id;
    uint8_t permitted_df;      /* IFO: 0 LB+P&S, 1 P&S only, 2 LB only, 3 none */
    bool    spu_native;        /* selected SPU is a letterbox/pan&scan variant,
                                * authored for the 4:3 output frame */
@@ -90,6 +92,14 @@ typedef struct dv_nav
 } dv_nav_t;
 
 bool dv_nav_open(struct dv_ctx *ctx, const dv_source_t *src);
+
+/* Resume points as save states (D-031): a fixed-size blob holding the
+ * libdvdnav VM state (position of the picture on screen + disc registers),
+ * tied to the disc by its libdvdread disc ID. */
+#define DV_STATE_SIZE 512
+size_t dv_nav_state_size(void);
+bool   dv_nav_save_state(struct dv_ctx *ctx, uint8_t *buf, size_t size);
+bool   dv_nav_load_state(struct dv_ctx *ctx, const uint8_t *buf, size_t size);
 void dv_nav_close(struct dv_ctx *ctx);
 
 /* Log disc-level info: volume ID, title string, region mask, title/VTS count. */

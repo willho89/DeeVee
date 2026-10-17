@@ -93,7 +93,15 @@ bool dv_nav_open(dv_ctx_t *ctx, const dv_source_t *src)
    dvdnav_logger_cb logcb = { nav_log };
    dvdnav_status_t st;
 
-   memset(nav, 0, sizeof(*nav));
+   {
+      /* The disc ID belongs to the content, not this open (restart). */
+      uint8_t id[16];
+      bool have_id = nav->have_disc_id;
+      memcpy(id, nav->disc_id, sizeof(id));
+      memset(nav, 0, sizeof(*nav));
+      memcpy(nav->disc_id, id, sizeof(id));
+      nav->have_disc_id = have_id;
+   }
    nav->stream.ctx    = ctx;
    nav->policy_title  = -1;
    nav->seek_target   = -1;
@@ -168,7 +176,9 @@ static void format_region_mask(int32_t mask, char *out, size_t len)
 
 /* libdvdnav doesn't expose the VTS count, so read the VMG IFO through a
  * separate, short-lived libdvdread handle. */
-static int probe_vts_count(dv_ctx_t *ctx, const dv_source_t *src)
+/* VTS count (libdvdnav doesn't expose it) and the disc ID (MD5 of the IFOs,
+ * libdvdread DVDDiscID) that save states are tied to. */
+static int probe_disc(dv_ctx_t *ctx, const dv_source_t *src)
 {
    dvd_logger_cb logcb = { read_log };
    dvd_reader_t *dvd;
@@ -196,6 +206,7 @@ static int probe_vts_count(dv_ctx_t *ctx, const dv_source_t *src)
          count = vmg->vmgi_mat->vmg_nr_of_title_sets;
       if (vmg)
          ifoClose(vmg);
+      ctx->nav.have_disc_id = DVDDiscID(dvd, ctx->nav.disc_id) == 0;
       DVDClose(dvd);
    }
    dv_stream_close(&stream);
@@ -223,7 +234,7 @@ void dv_nav_log_disc_info(dv_ctx_t *ctx, const dv_source_t *src)
           (unsigned)nav->disc_region_mask & 0xFF, regions, nav->vm_region,
           ctx->opt.region ? " (forced)" : " (auto)");
    dv_log(ctx, RETRO_LOG_INFO, "Titles         : %d\n", (int)titles);
-   dv_log(ctx, RETRO_LOG_INFO, "Title sets     : %d\n", probe_vts_count(ctx, src));
+   dv_log(ctx, RETRO_LOG_INFO, "Title sets     : %d\n", probe_disc(ctx, src));
 
    free(volid);
 }
@@ -1152,4 +1163,72 @@ void dv_nav_pointer(dv_ctx_t *ctx, int x, int y, bool activate)
       if (cur != best)
          dvdnav_button_select(nav->dvdnav, pci, best);
    }
+}
+
+/* ---- resume points / save states (CLAUDE.md §5.12, D-031) -------------- */
+
+#define DV_STATE_MAGIC   "DEEVEEST"
+#define DV_STATE_VERSION 1
+
+/* magic[8] version[4] has_id[1] disc_id[16] vm[DVDNAV_STATE_SIZE], zero pad */
+size_t dv_nav_state_size(void)
+{
+   return DV_STATE_SIZE;
+}
+
+bool dv_nav_save_state(dv_ctx_t *ctx, uint8_t *buf, size_t size)
+{
+   dv_nav_t *nav = &ctx->nav;
+   const pci_t *pci = dv_nav_presented_pci(ctx);
+   uint8_t *p = buf;
+
+   if (!nav->dvdnav || size < DV_STATE_SIZE)
+      return false;
+   memset(buf, 0, DV_STATE_SIZE);
+   memcpy(p, DV_STATE_MAGIC, 8);
+   p += 8;
+   p[0] = DV_STATE_VERSION;
+   p += 4;
+   *p++ = nav->have_disc_id;
+   memcpy(p, nav->disc_id, 16);
+   p += 16;
+   /* Resume at the VOBU on screen, not the read position (up to 3 s ahead). */
+   if (dvdnav_get_state(nav->dvdnav, pci ? pci->pci_gi.nv_pck_lbn : 0, p,
+                        DVDNAV_STATE_SIZE) != DVDNAV_STATUS_OK)
+   {
+      dv_log(ctx, RETRO_LOG_WARN, "save state: %s\n", dvdnav_err_to_string(nav->dvdnav));
+      return false;
+   }
+   return true;
+}
+
+bool dv_nav_load_state(dv_ctx_t *ctx, const uint8_t *buf, size_t size)
+{
+   dv_nav_t *nav = &ctx->nav;
+   const uint8_t *p = buf;
+
+   if (!nav->dvdnav || size < DV_STATE_SIZE || memcmp(p, DV_STATE_MAGIC, 8) ||
+       p[8] != DV_STATE_VERSION)
+   {
+      dv_osd(ctx, 3000, "Not a DeeVee save state");
+      return false;
+   }
+   p += 12;
+   if (p[0] && nav->have_disc_id && memcmp(p + 1, nav->disc_id, 16))
+   {
+      dv_osd(ctx, 3000, "Save state is from a different disc");
+      return false;
+   }
+   p += 17;
+
+   user_jump(ctx);
+   if (dvdnav_set_state(nav->dvdnav, p, DVDNAV_STATE_SIZE) != DVDNAV_STATUS_OK)
+   {
+      dv_log(ctx, RETRO_LOG_WARN, "load state: %s\n", dvdnav_err_to_string(nav->dvdnav));
+      dv_osd(ctx, 3000, "Couldn't resume from this save state");
+      return false;
+   }
+   nav->stopped = false;
+   dv_log(ctx, RETRO_LOG_INFO, "Resumed from save state\n");
+   return true;
 }

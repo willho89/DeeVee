@@ -469,9 +469,16 @@ RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
 {
 }
 
+/* RetroArch "Restart": like powering a player off and on, start again from
+ * the disc's First Play program. */
 RETRO_API void retro_reset(void)
 {
-   /* TODO(M4): dvdnav_menu_call(DVD_MENU_Root) / restart First Play PGC. */
+   if (!g_ctx)
+      return;
+   g_ctx->css_blocked = false;
+   g_ctx->ps_stats.scrambled = 0;
+   if (dv_nav_restart(g_ctx))
+      dv_osd(g_ctx, 2000, "Restarting disc");
 }
 
 static void output_audio(dv_ctx_t *ctx)
@@ -632,6 +639,12 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    g_can_dupe = false;
    environ_cb(RETRO_ENVIRONMENT_GET_CAN_DUPE, &g_can_dupe);
+   {
+      /* Resume points: fine for save/load, not for rewind, run-ahead or
+       * netplay. */
+      uint64_t quirks = RETRO_SERIALIZATION_QUIRK_INCOMPLETE;
+      environ_cb(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks);
+   }
    dv_input_init(g_ctx, input_state_cb,
                  environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL));
    dv_input_set_descriptors(environ_cb);
@@ -741,10 +754,22 @@ RETRO_API unsigned retro_get_region(void)
    return RETRO_REGION_NTSC;
 }
 
-/* TODO(M7): resume-point save states (§5.12). */
-RETRO_API size_t retro_serialize_size(void) { return 0; }
-RETRO_API bool retro_serialize(void *data, size_t size) { return false; }
-RETRO_API bool retro_unserialize(const void *data, size_t size) { return false; }
+/* Save states are resume points (§5.12, D-031): where the disc is and what
+ * its program has stored, not a frame-exact snapshot. */
+RETRO_API size_t retro_serialize_size(void)
+{
+   return g_ctx ? dv_nav_state_size() : 0;
+}
+
+RETRO_API bool retro_serialize(void *data, size_t size)
+{
+   return g_ctx && dv_nav_save_state(g_ctx, (uint8_t *)data, size);
+}
+
+RETRO_API bool retro_unserialize(const void *data, size_t size)
+{
+   return g_ctx && dv_nav_load_state(g_ctx, (const uint8_t *)data, size);
+}
 RETRO_API void retro_cheat_reset(void) { }
 RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code) { }
 RETRO_API void *retro_get_memory_data(unsigned id) { return NULL; }

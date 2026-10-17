@@ -73,8 +73,8 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 | libdvdcss from the system folder | ✅ Linux · ⏳ Windows, macOS, Android untested |
 | Linux x86_64 build | ✅ |
 | Windows, macOS, Android, ARM Linux builds | ⏳ Planned |
-| Save states (resume points) | ⏳ Planned |
-| RetroArch "Restart" | ⏳ Planned |
+| Save states (resume points: position + the disc's own memory) | ✅ Done |
+| RetroArch "Restart" (starts the disc over) | ✅ Done |
 | README / docs page for docs.libretro.com | ⏳ This README; docs page planned |
 | Closed captions, `CHG_COLCON`, DVD-VR, karaoke | 💤 Later |
 

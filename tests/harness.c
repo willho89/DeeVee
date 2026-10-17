@@ -26,11 +26,17 @@
  *                                   button for 2 frames
  *   HARNESS_OPT_<key>=<value>       core option value, e.g.
  *                                   HARNESS_OPT_deevee_subtitles=on
+ *   HARNESS_STATE=<file>            save-state file for the two below
+ *   HARNESS_SAVE=<frame>            retro_serialize into it after that frame
+ *   HARNESS_LOAD=<frame>            retro_unserialize from it before that
+ *                                   frame (frame 0: right after load)
+ *   HARNESS_RESET=<frame>           retro_reset before that frame
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #include <dlfcn.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -449,6 +455,14 @@ int main(int argc, char **argv)
    bool (*p_retro_load_game)(const struct retro_game_info *);
    void (*p_retro_unload_game)(void);
    void (*p_retro_run)(void);
+   size_t (*p_retro_serialize_size)(void);
+   bool (*p_retro_serialize)(void *, size_t);
+   bool (*p_retro_unserialize)(const void *, size_t);
+   void (*p_retro_reset)(void);
+   const char *state_file = getenv("HARNESS_STATE");
+   long save_at  = getenv("HARNESS_SAVE")  ? atol(getenv("HARNESS_SAVE"))  : -1;
+   long load_at  = getenv("HARNESS_LOAD")  ? atol(getenv("HARNESS_LOAD"))  : -1;
+   long reset_at = getenv("HARNESS_RESET") ? atol(getenv("HARNESS_RESET")) : -1;
 
    if (argc < 3)
    {
@@ -471,6 +485,8 @@ int main(int argc, char **argv)
    LOAD(retro_get_system_info);  LOAD(retro_get_system_av_info);
    LOAD(retro_load_game);        LOAD(retro_unload_game);
    LOAD(retro_run);
+   LOAD(retro_serialize_size);   LOAD(retro_serialize);
+   LOAD(retro_unserialize);      LOAD(retro_reset);
 
    p_retro_get_system_info(&sys);
    printf("core: %s %s\n", sys.library_name, sys.library_version);
@@ -504,9 +520,40 @@ int main(int argc, char **argv)
    for (i = 0; i < frames; i++)
    {
       g_frame_no = i;
+      if ((long)i == reset_at)
+      {
+         printf("reset at frame %u\n", i);
+         p_retro_reset();
+      }
+      if ((long)i == load_at && state_file)
+      {
+         size_t n = p_retro_serialize_size();
+         void *buf = calloc(1, n ? n : 1);
+         FILE *f = fopen(state_file, "rb");
+         size_t got = f ? fread(buf, 1, n, f) : 0;
+         if (f)
+            fclose(f);
+         printf("unserialize at frame %u: %s (%zu bytes)\n", i,
+                got == n && n && p_retro_unserialize(buf, n) ? "ok" : "FAILED", got);
+         free(buf);
+      }
       p_retro_run();
       if (want_dump(i))
          dump_frame(i);
+      if ((long)i == save_at && state_file)
+      {
+         size_t n = p_retro_serialize_size();
+         void *buf = calloc(1, n ? n : 1);
+         bool ok = n && p_retro_serialize(buf, n);
+         FILE *f = ok ? fopen(state_file, "wb") : NULL;
+         if (f)
+         {
+            fwrite(buf, 1, n, f);
+            fclose(f);
+         }
+         printf("serialize at frame %u: %s (%zu bytes)\n", i, f ? "ok" : "FAILED", n);
+         free(buf);
+      }
    }
 
    p_retro_unload_game();

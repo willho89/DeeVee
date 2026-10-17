@@ -155,6 +155,15 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled
 	  echo "$$out" | grep -q "OSD: This disc is encrypted" && ! echo "$$out" | grep -q "End of disc" \
 	  && echo "$$out" | grep -q "scrambled 1$$" && echo "   scrambled.iso: alert + halt (ok)" \
 	  || { echo "   scrambled.iso: FAILED"; exit 1; }
+	@echo "== Save state: resume point in a new session lands on the saved picture; Restart re-runs First Play"
+	@HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_SAVE=400 HARNESS_DUMP=$(BUILD_DIR)/state-a HARNESS_DUMP_FRAMES=520 \
+	  $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 521 $(BUILD_DIR)/system 2>/dev/null | grep -q "serialize at frame 400: ok" \
+	  && out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_LOAD=0 \
+	    $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 200 $(BUILD_DIR)/system 2>&1) \
+	  && echo "$$out" | grep -q "unserialize at frame 0: ok" && echo "$$out" | grep -q "Resumed from save state" \
+	  && echo "   save/load (ok)" || { echo "   save/load: FAILED"; exit 1; }
+	@out=$$(HARNESS_DEBUG=1 HARNESS_RESET=300 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 330 $(BUILD_DIR)/system 2>&1); \
+	  echo "$$out" | grep -q "OSD: Restarting disc" && echo "   reset (ok)" || { echo "   reset: FAILED"; exit 1; }
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
 	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
 	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
@@ -175,6 +184,12 @@ check-discs: $(TARGET) $(HARNESS)
 	echo "== TIMERIC: moving onto an auto-action button follows its jump (photo gallery)"; \
 	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:UP,959:A,1319:RIGHT,1678:RIGHT" $(HARNESS) ./$(TARGET) $(TIMERIC) 1800 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f1678 .*navstate: cellN=1 pgN=1 pgc_length=36000' \
-	  && echo "   gallery page 2 -> 3 (ok)" || { echo "   auto-action move: FAILED"; exit 1; }
+	  && echo "   gallery page 2 -> 3 (ok)" || { echo "   auto-action move: FAILED"; exit 1; }; \
+	echo "== TIMERIC: state saved mid-short resumes and returns to the same menu/button (disc registers kept)"; \
+	HARNESS_STATE=$(BUILD_DIR)/timeric.state HARNESS_SAVE=3000 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" \
+	  $(HARNESS) ./$(TARGET) $(TIMERIC) 3001 $(BUILD_DIR)/system >/dev/null 2>&1; \
+	out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/timeric.state HARNESS_LOAD=0 $(HARNESS) ./$(TARGET) $(TIMERIC) 3200 $(BUILD_DIR)/system 2>&1); \
+	echo "$$out" | grep -qE '^\[f30[5-9][0-9] .*VTS 19 -> 19 \(domain 4\)' && echo "$$out" | grep -qE '^\[f3[01][0-9][0-9] .*highlight: button 1 ' \
+	  && echo "   resume mid-short -> Field Day menu, button 1 (ok)" || { echo "   resume mid-short: FAILED"; exit 1; }
 
 .PHONY: harness fixture check check-discs
