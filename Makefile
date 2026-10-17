@@ -171,6 +171,10 @@ check-discs: $(TARGET) $(HARNESS)
 	echo "== TIMERIC: menu reached when a short ends is highlighted (held-clock PCI)"; \
 	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" $(HARNESS) ./$(TARGET) $(TIMERIC) 6300 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f6[01][0-9][0-9] .*highlight: button 1 ' \
-	  && echo "   Field Day menu after 'Meet Campy!' highlighted (ok)" || { echo "   return menu: FAILED"; exit 1; }
+	  && echo "   Field Day menu after 'Meet Campy!' highlighted (ok)" || { echo "   return menu: FAILED"; exit 1; }; \
+	echo "== TIMERIC: moving onto an auto-action button follows its jump (photo gallery)"; \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:UP,959:A,1319:RIGHT,1678:RIGHT" $(HARNESS) ./$(TARGET) $(TIMERIC) 1800 $(BUILD_DIR)/system 2>&1); \
+	echo "$$out" | grep -qE '^\[f1678 .*navstate: cellN=1 pgN=1 pgc_length=36000' \
+	  && echo "   gallery page 2 -> 3 (ok)" || { echo "   auto-action move: FAILED"; exit 1; }
 
 .PHONY: harness fixture check check-discs

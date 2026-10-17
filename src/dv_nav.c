@@ -806,11 +806,20 @@ void dv_nav_button_move(dv_ctx_t *ctx, dv_button_dir_t dir)
    dv_nav_t *nav = &ctx->nav;
    pci_t *pci = (pci_t *)dv_nav_presented_pci(ctx);
    dvdnav_status_t st = DVDNAV_STATUS_ERR;
-   int32_t before = 0, after = 0;
+   int32_t before = 0, after = 0, target = 0;
+   bool target_auto = false;
 
    if (!nav->dvdnav || !dv_nav_has_buttons(ctx))
       return;
    dvdnav_get_current_highlight(nav->dvdnav, &before);
+   if (before > 0 && before <= pci->hli.hl_gi.btn_ns)
+   {
+      const btni_t *b = &pci->hli.btnit[before - 1];
+      target = dir == DV_BTN_UP ? b->up : dir == DV_BTN_DOWN ? b->down :
+               dir == DV_BTN_LEFT ? b->left : b->right;
+      target_auto = target > 0 && target <= pci->hli.hl_gi.btn_ns &&
+                    pci->hli.btnit[target - 1].auto_action_mode;
+   }
    switch (dir)
    {
       case DV_BTN_UP:    st = dvdnav_upper_button_select(nav->dvdnav, pci); break;
@@ -819,11 +828,14 @@ void dv_nav_button_move(dv_ctx_t *ctx, dv_button_dir_t dir)
       case DV_BTN_RIGHT: st = dvdnav_right_button_select(nav->dvdnav, pci); break;
    }
    dvdnav_get_current_highlight(nav->dvdnav, &after);
-   dv_log(ctx, RETRO_LOG_DEBUG, "button move %d: %d -> %d%s\n", (int)dir, before, after,
-          st == DVDNAV_STATUS_OK ? "" : " (refused)");
-   /* Auto-action buttons activate on selection inside libdvdnav: if the VM
-    * jumped, the position changed under us. */
-   if (st == DVDNAV_STATUS_OK && pci->hli.btnit[after > 0 ? after - 1 : 0].auto_action_mode)
+   dv_log(ctx, RETRO_LOG_DEBUG, "button move %d: %d -> %d (target %d%s)%s\n", (int)dir, before,
+          after, target, target_auto ? ", auto-action" : "", st == DVDNAV_STATUS_OK ? "" : " (refused)");
+   /* Auto-action buttons activate on selection inside libdvdnav: the VM
+    * jumped, so leave the still and read on. Judge by the button moved to,
+    * not the one selected afterwards: the button's command may select
+    * another (TIMERIC photo gallery: auto button 3 links to a menu that
+    * starts on button 2; we stayed in the old still, M6c). */
+   if (st == DVDNAV_STATUS_OK && target_auto)
       user_jump(ctx);
 }
 

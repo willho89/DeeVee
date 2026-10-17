@@ -66,7 +66,7 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 
 | Area | State |
 |---|---|
-| Playback, A/V sync, subtitles, interactive menus | ✅ Done; menus checked against VLC button by button on test discs |
+| Playback, A/V sync, subtitles, interactive menus | ✅ Done; menus checked against VLC button by button (TIMERIC: 14 menus, ~100 paths, 3 bugs found and fixed) |
 | Region / languages / CHD | ✅ Done |
 | Seek, pause, chapters, tracks, deinterlace, OSD | ✅ Done |
 | TV Display Type (16:9 / letterbox / pan & scan) | ✅ Done |
