@@ -1,12 +1,14 @@
 # DeeVee
 
+[![build](https://github.com/willho89/DeeVee/actions/workflows/build.yml/badge.svg)](https://github.com/willho89/DeeVee/actions/workflows/build.yml)
+
 A DVD-Video player core for [RetroArch](https://www.retroarch.com/) (libretro).
 
 DeeVee plays DVD images with full disc menus: button highlights, still and motion menus, sub-menus and special features behave the way they do on a set-top player. It's region-free, and it renders subpictures (subtitles and menu overlays) itself, so menu highlights land exactly where the disc puts them.
 
 It's built on [libdvdnav](https://code.videolan.org/videolan/libdvdnav) / [libdvdread](https://code.videolan.org/videolan/libdvdread) for navigation and [FFmpeg](https://ffmpeg.org/) for decoding. Large parts of the glue are ported from VLC.
 
-> **Status: alpha.** Plays real discs end to end on Linux (tested on a Steam Deck). Builds for other platforms are in progress, see [Status](#status).
+> **Status: alpha.** Plays real discs end to end (developed on a Steam Deck). Builds for Linux, Windows, macOS and Android come out of CI on every push; see [Status](#status).
 
 ## Features
 
@@ -70,12 +72,12 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 | Region / languages / CHD | ✅ Done |
 | Seek, pause, chapters, tracks, deinterlace, OSD | ✅ Done |
 | TV Display Type (16:9 / letterbox / pan & scan) | ✅ Done |
-| libdvdcss from the system folder | ✅ Linux, Windows (tested under Wine) · Android written, untested · ⏳ macOS |
+| libdvdcss from the system folder | ✅ Linux, Windows (Wine), macOS (CI) · Android written, untested |
 | Linux x86_64 build | ✅ |
 | Windows x86_64 build | ✅ Cross-compiled; full test suite passes under Wine, real-Windows check pending |
 | Linux arm64 / armhf (Raspberry Pi etc.) | ✅ Cross-compiled; full test suite passes under QEMU, real-device check pending |
 | Android arm64-v8a / armeabi-v7a | ✅ Builds; not yet run on a device |
-| macOS | ⏳ Planned |
+| macOS arm64 / x86_64 | ✅ Built natively in CI; full test suite passes on both |
 | Save states (resume points: position + the disc's own memory) | ✅ Done |
 | RetroArch "Restart" (starts the disc over) | ✅ Done |
 | README / docs page for docs.libretro.com | ⏳ This README; docs page planned |
@@ -105,6 +107,10 @@ Windows (cross-compiled from Linux with MinGW-w64; tests run under Wine):
 make -j8 platform=win DEEVEE_CSS=dlopen   # -> deevee_libretro.dll
 make platform=win check
 ```
+
+macOS: `make -j8 DEEVEE_CSS=dlopen` on a Mac (Homebrew `meson ninja nasm pkg-config`) gives `deevee_libretro.dylib`.
+
+Every push builds all targets in GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)); the cores are attached to each run as artifacts.
 
 Other targets (cross-compiled from Linux): `platform=linux-arm64`, `platform=linux-armhf` (tests under qemu-user), `platform=android-arm64`, `platform=android-armv7` (needs the Android NDK, `NDK=/path/to/android-ndk-r27c`). Cross-built cores land in `build/<platform>/`.
 
