@@ -24,6 +24,8 @@ It's built on [libdvdnav](https://code.videolan.org/videolan/libdvdnav) / [libdv
 
 ## Installing
 
+Download the zip for your platform from [Releases](https://github.com/willho89/DeeVee/releases) (or the latest CI run's artifacts), then:
+
 1. Copy the core for your platform (`deevee_libretro.so` / `.dll` / `.dylib`) into RetroArch's `cores` folder and `deevee_libretro.info` into its `info` folder.
 2. In RetroArch: **Load Core → DeeVee**, then **Load Content** and pick an `.iso`, `.chd` or `VIDEO_TS.IFO`.
 

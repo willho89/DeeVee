@@ -391,6 +391,8 @@ Re-check versions at the start of M0 and M7.
 - libdvdnav exposes no VTS count; `dv_nav_log_disc_info` reads it from the VMG IFO via a short-lived libdvdread handle.
 
 ### Session 2026-10-17
+- **Released v0.6.0 (pre-release)** — https://github.com/willho89/DeeVee/releases/tag/v0.6.0. Process: bump `DV_VERSION` (src/dv_ctx.h) + `display_version` (.info), write `docs/release-notes/vX.Y.Z.md`, push main and let CI go green, then `git tag -a vX.Y.Z` + push the tag: build.yml packages every platform (`tests/ci/package.sh`: stripped core, .info, README, LICENSE, INSTALL.txt, licenses/) and the `release` job publishes them plus a complete source tarball (`git ls-files --recurse-submodules`). Distribution builds are DEEVEE_CSS=dlopen. libretro buildbot/core-info: not now (user, 2026-10-17).
+- The 0.6.0 source tarball predates the Makefile.deps fallback for non-git trees (libdvdnav copy used `git archive`); fixed after the tag.
 - Windows cross build: `distrobox enter deevee-build -- make -j8 platform=win [DEEVEE_CSS=dlopen]`, tests `make platform=win check` (Wine). Wine stdout is CRLF: anchor test greps with `[^0-9]*$$`, not `$$`. Build dirs per platform (`build/win64/`), fixtures shared in `build/fixtures/`. The Windows DLL lands at the repo root as `deevee_libretro.dll` (gitignored).
 - Don't `pkill -f <pattern>` from a Bash call whose own command line contains the pattern — it kills the calling shell (exit 144). Kill by PID, excluding `$$`.
 - Background-task notices for 3 stopped wait-loops: obsolete, nothing to resume.

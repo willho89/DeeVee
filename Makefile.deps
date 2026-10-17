@@ -59,7 +59,12 @@ DVDNAV_SRC     := $(DVD_BUILD)/src/libdvdnav
 $(DVD_BUILD)/.libdvdnav-src.stamp: $(DVDNAV_PATCHES)
 	rm -rf $(DVDNAV_SRC)
 	@mkdir -p $(DVDNAV_SRC)
-	cd $(DEPS_DIR)/libdvdnav && git archive HEAD | tar -x -C $(abspath $(DVDNAV_SRC))
+	# git checkout: the committed tree; release source tarball: the files.
+	if git -C $(DEPS_DIR)/libdvdnav rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+	  cd $(DEPS_DIR)/libdvdnav && git archive HEAD | tar -x -C $(abspath $(DVDNAV_SRC)); \
+	else \
+	  cp -R $(DEPS_DIR)/libdvdnav/. $(DVDNAV_SRC)/; \
+	fi
 	for p in $(DVDNAV_PATCHES); do patch -d $(DVDNAV_SRC) -p1 --no-backup-if-mismatch < $$p || exit 1; done
 	@touch $@
 
