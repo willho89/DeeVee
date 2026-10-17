@@ -362,7 +362,7 @@ Re-check versions at the start of M0 and M7.
 - Stream `pf_seek` must return 0 on success (not the offset).
 - Harmless upstream log noise on file sources: "Device name string NULL", "Can't read name block", `findDirFile ... video_ts/`.
 - `libdvdnav: Suspected RCE Region Protection!!!` (raw stdout from vm/decoder.c) fires whenever a disc's VM reads SPRM 20. Informational. IDIOCRACY_SIDEA (region 1) triggers it and passes with VM region 1 — reuse as the M5 RCE test.
-- Repo is **local-only** for now (no remote; user decision 2026-10-15). Don't push or set up hosted CI; run `make check` + `make DEEVEE_CSS=none` locally instead of the CI job in the §9 risk register.
+- Repo is on GitHub (2026-10-16, user decision): `origin` = https://github.com/willho89/DeeVee (public), branch `main`. It replaced an earlier, abandoned attempt (force-pushed at the user's request). `gh` lives in `~/.local/bin` (user-local install; SteamOS root is read-only), logged in as willho89, `gh auth setup-git` done. No hosted CI yet: run `make check` + `make DEEVEE_CSS=none` locally (§9 risk register).
 - **Never pass `--appendconfig` to the user's Steam RetroArch**: `config_save_on_exit = true` writes the appended settings into its `retroarch.cfg` (2026-10-15 this silently set `audio_driver = "null"`; original is `"pulse"`). For silent/automated RA runs, copy `retroarch.cfg` to the scratchpad, edit the copy, and launch with `--config <copy>`.
 - Test media lives in `TestISOs/` (gitignored, never commit).
 - Most commercial discs only put PTS on a few pictures per GOP (IDIOCRACY: ~90 % of frames interpolated). `dv_video` interpolates `next_pts = pts + duration`, duration = frame period × (2+repeat_pict)/2.
@@ -408,7 +408,7 @@ Re-check versions at the start of M0 and M7.
 
 ### Previous session (left off 2026-10-15)
 - M0–M6 done and committed. M6 awaits the user's RetroArch walkthrough (seek/pause/tracks/info/deinterlace on TIMERIC + IDIOCRACY).
-- **Before starting M7, ask the user which M7 items to prioritise** — several need hardware/OS access they may not have: Windows/macOS/Android builds, encrypted media + physical drive checks (carried from M5), read-ahead thread for drives, resume-point save states, GL path, buildbot/CI (repo is local-only), docs.
+- **Before starting M7, ask the user which M7 items to prioritise** — several need hardware/OS access they may not have: Windows/macOS/Android builds, encrypted media + physical drive checks (carried from M5), read-ahead thread for drives, resume-point save states, GL path, buildbot/CI, docs.
 - Launch command for the user (Steam RetroArch needs its runtime wrapper):
   `cd ~/.local/share/Steam/steamapps/common/RetroArch && ~/.local/share/Steam/steamapps/common/SteamLinuxRuntime/steam-runtime/run.sh ./retroarch.sh -L /home/deck/.claude/projects/DeeVee/deevee_libretro.so <iso|chd>`
 - Build: `distrobox enter deevee-build -- make -j8` ; tests: `distrobox enter deevee-build -- make check`.
