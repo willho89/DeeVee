@@ -8,8 +8,14 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+# Release builds are named after the tag (v0.6.0 -> 0.6.0), others after
+# the commit.
+env:
+  VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('dev-{0}', github.sha) }}
 
 jobs:
   linux-x86_64:
@@ -32,16 +38,16 @@ jobs:
           make -j4 DEEVEE_CSS=dlopen
           make DEEVEE_CSS=dlopen check
           tests/ci/check_libdvdcss.sh ./deevee_libretro.so build/harness libdvdcss.so.2
+      - name: Package
+        run: tests/ci/package.sh ./deevee_libretro.so strip linux-x86_64 "${VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
           name: fixtures
           path: build/fixtures
       - uses: actions/upload-artifact@v4
         with:
-          name: deevee-linux-x86_64
-          path: |
-            deevee_libretro.so
-            deevee_libretro.info
+          name: package-linux-x86_64
+          path: build/package/*.zip
 
   windows-x86_64:
     runs-on: ubuntu-24.04
@@ -65,19 +71,27 @@ jobs:
         run: |
           make -j4 platform=win DEEVEE_CSS=dlopen
           make platform=win DEEVEE_CSS=dlopen check
+      - name: Package
+        run: tests/ci/package.sh ./deevee_libretro.dll x86_64-w64-mingw32-strip windows-x86_64 "${VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
-          name: deevee-windows-x86_64
-          path: |
-            deevee_libretro.dll
-            deevee_libretro.info
+          name: package-windows-x86_64
+          path: build/package/*.zip
 
   cross:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux-arm64, linux-armhf, android-arm64, android-armv7]
+        include:
+          - platform: linux-arm64
+            strip: aarch64-linux-gnu-strip
+          - platform: linux-armhf
+            strip: arm-linux-gnueabihf-strip
+          - platform: android-arm64
+            strip: llvm-strip
+          - platform: android-armv7
+            strip: llvm-strip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,12 +105,15 @@ jobs:
         run: |
           # The runner image ships an NDK; Android builds use it.
           make -j4 platform=${{ matrix.platform }} DEEVEE_CSS=dlopen NDK="$ANDROID_NDK_LATEST_HOME"
+      - name: Package
+        run: |
+          export PATH="$PATH:$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          tests/ci/package.sh build/${{ matrix.platform }}/deevee_libretro*.so ${{ matrix.strip }} \
+            ${{ matrix.platform }} "${VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
-          name: deevee-${{ matrix.platform }}
-          path: |
-            build/${{ matrix.platform }}/deevee_libretro*.so
-            deevee_libretro.info
+          name: package-${{ matrix.platform }}
+          path: build/package/*.zip
 
   macos:
     needs: linux-x86_64
@@ -126,9 +143,39 @@ jobs:
           make -j3 DEEVEE_CSS=dlopen
           make DEEVEE_CSS=dlopen check
           tests/ci/check_libdvdcss.sh ./deevee_libretro.dylib build/osx/harness libdvdcss.2.dylib
+      - name: Package
+        run: tests/ci/package.sh ./deevee_libretro.dylib "strip -x" macos-${{ matrix.arch }} "${VERSION#v}"
       - uses: actions/upload-artifact@v4
         with:
-          name: deevee-macos-${{ matrix.arch }}
-          path: |
-            deevee_libretro.dylib
-            deevee_libretro.info
+          name: package-macos-${{ matrix.arch }}
+          path: build/package/*.zip
+
+  # Tags only: GitHub release with every platform's zip and a complete
+  # source archive (GitHub's own source zips leave out the submodules, and
+  # the GPL wants the bundled libraries' source next to the binaries).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-x86_64, windows-x86_64, cross, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      - name: Source archive (with submodules and patches)
+        run: |
+          v="${VERSION#v}"
+          git ls-files --recurse-submodules > files.txt
+          tar --transform "s,^,deevee-$v/," -czf "dist/deevee-$v-source.tar.gz" -T files.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --prerelease \
+            --title "DeeVee ${GITHUB_REF_NAME}" --notes-file "docs/release-notes/${GITHUB_REF_NAME}.md"
