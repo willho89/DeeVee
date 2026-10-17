@@ -41,9 +41,13 @@ ifeq ($(platform),unix)
   BUILD_DIR ?= build
   HOST_LIBS := -ldl
 else ifeq ($(platform),osx)
+  # Native build on a Mac (Apple's SDK isn't licensed for other hosts); CI
+  # builds arm64 and x86_64 on GitHub Actions macOS runners.
   TARGET  := $(TARGET_NAME)_libretro.dylib
-  SHARED  := -dynamiclib
+  SHARED  := -dynamiclib -Wl,-exported_symbol,_retro_*
   BUILD_DIR ?= build/osx
+  MACOSX_DEPLOYMENT_TARGET ?= 11.0
+  export MACOSX_DEPLOYMENT_TARGET
 else ifeq ($(platform),win)
   TARGET  := $(TARGET_NAME)_libretro.dll
   # Fully static (libgcc, winpthreads): the DLL needs only Windows' own DLLs.

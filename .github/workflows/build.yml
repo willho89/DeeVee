@@ -1,0 +1,134 @@
+# DeeVee — build every platform, run the headless test suite where the
+# platform can run it (natively, or under Wine for Windows).
+#
+# Fixture discs are generated once (Linux: dvdauthor, ffmpeg, genisoimage,
+# chdman) and shared with the macOS jobs. Each job uploads its core.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q meson ninja-build nasm pkg-config \
+            dvdauthor ffmpeg genisoimage mame-tools python3
+      - name: Build (libdvdcss built in) and test
+        run: |
+          make -j4
+          make check
+      - name: Distribution build (libdvdcss from the system folder) and test
+        run: |
+          make -j4 DEEVEE_CSS=dlopen
+          make DEEVEE_CSS=dlopen check
+          tests/ci/check_libdvdcss.sh ./deevee_libretro.so build/harness libdvdcss.so.2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: build/fixtures
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deevee-linux-x86_64
+          path: |
+            deevee_libretro.so
+            deevee_libretro.info
+
+  windows-x86_64:
+    runs-on: ubuntu-24.04
+    needs: linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: build/fixtures
+      - name: Keep downloaded fixtures up to date for make
+        run: find build/fixtures \( -name '*.chd' -o -name scrambled.iso \) -exec touch {} +
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q meson ninja-build nasm pkg-config python3 \
+            mingw-w64 wine64
+      - name: Build (MinGW-w64) and test under Wine
+        run: |
+          make -j4 platform=win DEEVEE_CSS=dlopen
+          make platform=win DEEVEE_CSS=dlopen check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deevee-windows-x86_64
+          path: |
+            deevee_libretro.dll
+            deevee_libretro.info
+
+  cross:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux-arm64, linux-armhf, android-arm64, android-armv7]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q meson ninja-build nasm pkg-config \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+      - name: Build
+        run: |
+          # The runner image ships an NDK; Android builds use it.
+          make -j4 platform=${{ matrix.platform }} DEEVEE_CSS=dlopen NDK="$ANDROID_NDK_LATEST_HOME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deevee-${{ matrix.platform }}
+          path: |
+            build/${{ matrix.platform }}/deevee_libretro*.so
+            deevee_libretro.info
+
+  macos:
+    needs: linux-x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: build/fixtures
+      - name: Keep downloaded fixtures up to date for make
+        run: find build/fixtures \( -name '*.chd' -o -name scrambled.iso \) -exec touch {} +
+      - name: Install tools
+        run: brew install meson ninja nasm pkg-config
+      - name: Build and test
+        run: |
+          make -j3 DEEVEE_CSS=dlopen
+          make DEEVEE_CSS=dlopen check
+          tests/ci/check_libdvdcss.sh ./deevee_libretro.dylib build/osx/harness libdvdcss.2.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deevee-macos-${{ matrix.arch }}
+          path: |
+            deevee_libretro.dylib
+            deevee_libretro.info
