@@ -20,7 +20,7 @@ Guiding rule: **don't reinvent the wheel.** The DVD virtual machine, IFO parsing
 ## 1. Scope
  
 ### In scope (v1)
-- Content: `.iso` images, `.chd` images (MAME `chdman createdvd` DVD CHDs), `VIDEO_TS` folders (load `VIDEO_TS.IFO`), mounted physical discs (load `VIDEO_TS.IFO` from the mount; libdvdread resolves the block device for CSS).
+- Content: `.iso` images, `.chd` images (MAME `chdman createdvd` DVD CHDs), `VIDEO_TS` folders (load `VIDEO_TS.IFO`). (Mounted physical discs dropped from scope 2026-10-16, D-029.)
 - Full DVD VM: First Play PGC, root/title/chapter/audio/subtitle/angle menus, button navigation and activation, still frames, seamless branching, multi-angle, parental level, RCE discs.
 - Video: MPEG-1/MPEG-2, NTSC (720×480) and PAL (720×576) incl. 704/352 widths, 4:3 and anamorphic 16:9, letterbox/pan-scan flags, 3:2 pulldown (RFF/TFF), interlaced content.
 - Audio: AC-3, DTS, LPCM (16/20/24-bit, 48/96 kHz), MPEG-1 Layer II. Output fixed 48 kHz stereo (downmix).
@@ -29,6 +29,7 @@ Guiding rule: **don't reinvent the wheel.** The DVD virtual machine, IFO parsing
 - Input: RetroPad, mouse, and pointer/touch.
 ### Out of scope (v1, revisit later)
 - DVD-Audio, DVD-VR (+VR/-VR recordings), Blu-ray.
+- Physical DVD drives (D-029): no drive-specific work (read-ahead thread, device CSS auth, drive tests). A mounted disc's VIDEO_TS folder may still happen to work.
 - Closed captions (Line 21) — planned for a later milestone.
 - Bit-exact passthrough (S/PDIF/HDMI bitstream) — not possible through libretro audio.
 - Full deterministic save states (we'll do "resume points" first).
@@ -278,10 +279,10 @@ Use `RETRO_ENVIRONMENT_SET_MESSAGE_EXT` for: title/chapter on change, time on se
 - User reports some TIMERIC.iso menu navigation isn't 1:1 with VLC (a known-hard disc that has stumped other players). Method: drive VLC and DeeVee with the same scripted key sequences from the same start state; at each step compare domain/title/PGC/cell, button number and SPRM/GPRM state (VLC: `--verbose=2` dvdnav logs + `-V yuv` frame dumps; DeeVee: harness trace), then diff the first divergence and fix. Each fixed case becomes a regression test in `tests/`.
 - **Done when:** every menu path reachable from TIMERIC's root menu lands on the same PGC/button as VLC, with the same highlight picture.
 ### M7 — Portability, performance, distribution
-- **Carried over from M5:** verify CSS decryption on genuinely encrypted media (key cracking, cache reuse, CSS method option, slow-open OSD); mounted physical drive playback (Linux, Windows).
+- **Carried over from M5:** verify CSS decryption on genuinely encrypted media (key cracking, cache reuse, CSS method option, slow-open OSD) — when the user or a tester has an encrypted image. Physical drive playback dropped (D-029).
 - **CSS break-out for distribution (D-003 phase 2, D-024):** switch distributed builds to `DEEVEE_CSS=dlopen`, loading libdvdcss from RetroArch's system directory like a BIOS (§5.8). Add the optional firmware entries to the .info file. Verify the pre-load trick per platform (Linux `libdvdcss.so.2`, Windows `libdvdcss-2.dll`, macOS `libdvdcss.2.dylib`, Android copy-to-private-storage) and document it. When an encrypted disc is opened without libdvdcss, show a clear OSD message ("This disc is encrypted — libdvdcss not found; see docs") instead of a generic read error. Keep `static` as the default for local/dev builds.
 - **Per-platform builds:** a libretro core is a native shared library, so each OS/CPU pair needs its own binary (Linux x86_64 `.so`, Windows x86_64 `.dll`, macOS x86_64/arm64 `.dylib`, Android arm64-v8a/armeabi-v7a `.so`, Linux arm64/armhf for Pi-class devices). One source tree; the Makefile `platform=` switch + buildbot produce them. Windows/macOS/Android builds; VFS-backed stream I/O on Android; optional read-ahead thread for physical drives; resume-point save states; optional GL hardware path (YUV→RGB + SPU blend in shader) for low-power devices; libretro buildbot CI; docs page for docs.libretro.com.
-- **Done when:** full test set passes on 3 desktop OSes + Android; Raspberry Pi 4–class device plays without drops; a `dlopen` build plays unencrypted fixtures with no libdvdcss present, plays encrypted test discs once the user supplies it, and shows the "libdvdcss not found" message otherwise.
+- **Done when:** builds exist for every RetroArch platform DeeVee can target (user goal 2026-10-16: available to others on every OS) — at minimum Linux x86_64/arm64/armhf, Windows x86_64, macOS arm64/x86_64, Android arm64-v8a/armeabi-v7a; full test set passes on 3 desktop OSes + Android; Raspberry Pi 4–class device plays without drops; a `dlopen` build plays unencrypted fixtures with no libdvdcss present, plays encrypted test discs once the user supplies it, and shows the "libdvdcss not found" message otherwise.
 ### M6b — Player display type (added 2026-10-16, user request; supersedes D-023)
 - Core option **TV Display Type**: `16:9 Widescreen` (default) / `4:3 Letterbox` / `4:3 Pan & Scan`, like a hardware player's setup menu. Sets SPRM 14 (display mode + "TV aspect" bits) via libdvdnav before/at open so the disc's VM picks the matching menus, and selects the matching SPU variant (wide / letterbox / pan-scan streams from `SPU_STREAM_CHANGE`).
 - Rendering for 16:9 content on a 4:3 TV: **Letterbox** — output 4:3, picture scaled into the middle with black bars (SPU + highlight coords mapped through the same transform, pointer mapping updated); **Pan & Scan** — 4:3 crop using the MPEG-2 sequence-display-extension / pan-scan offsets when present, centre crop otherwise. 4:3 content is unchanged in all modes.
@@ -388,6 +389,13 @@ Re-check versions at the start of M0 and M7.
 - No libdvdnav API for parental level (PTL_REG = 15 = unrestricted, set in vm_reset): parental option dropped (D-019).
 - libdvdnav exposes no VTS count; `dv_nav_log_disc_info` reads it from the VMG IFO via a short-lived libdvdread handle.
 
+### Plan update 2 (2026-10-16, user)
+- **Goal: DeeVee is for others** → builds for every OS (M7 per-platform builds are now the main track), buildbot/core-info submission, docs.
+- **Physical drives out of scope** (D-029). **Other-region/PAL testing** left to the community or later (no PAL disc here).
+- **README** (done 2026-10-16): `README.md` describes the current DeeVee, not the abandoned earlier attempt that used to be in the GitHub repo. Keep its Status table in step with §12.
+- GitHub contributors: only willho89 per the API; old Cursor/other-account entries came from the replaced history and drop off GitHub's cached sidebar on their own.
+- **Next after the M6c batch:** `retro_reset` (restart via First Play) + resume-point save states (§5.12), then Windows build.
+
 ### Plan update (2026-10-16)
 - User rips with MakeMKV: all TestISOs are decrypted; no encrypted image available this session — CSS-cracking verification stays deferred; test the no-libdvdcss and libdvdcss-in-system-dir paths with the decrypted images plus a synthetic scrambled-flag fixture for the "encrypted" OSD message.
 - Order agreed: **M6b (TV Display Type) → D-024 libdvdcss-from-system-dir (dlopen build) → M6c TIMERIC VLC parity → rest of M7.**
@@ -444,6 +452,7 @@ Re-check versions at the start of M0 and M7.
 | D-026 | libdvdnav carries a local patch (`patches/libdvdnav/*.patch`, applied to a copy under build/ by Makefile.deps; submodule stays pristine): `dvdnav_set_player_video_config()` fixes SPRM 14 (otherwise libdvdnav rewrites its TV-aspect bits to the source aspect on every query) and `dvdnav_get_active_spu_stream_mode()`. | No public API exists; both are tiny and upstreamable. | Accepted (2026-10-16) |
 | D-027 | 4:3 TV modes honour the IFO's permitted display modes (P&S-only / LB-only override the user's choice), like hardware players. Menus on both 16:9 test discs are P&S-only, features LB-only. Overlay space: if the selected SPU for the mode is a distinct stream it's authored for the 4:3 frame (compose after transform, matching button group); otherwise compose on the stored picture and transform both. | Matches player behaviour and the disc's authored SPU/button variants. | Accepted (2026-10-16) |
 | D-028 | While the clock is unanchored (after WAIT, through stills) subpictures and the presented PCI use the held clock time, and inside a still the newest queued one (reading has stopped, so it belongs to the still). VLC's clock keeps running through stills; ours re-anchors on the next picture, which a still never delivers. | Fixes TIMERIC sub-menus and post-title menus showing no highlight; matches VLC on all tested paths. | Accepted (2026-10-16) |
+| D-029 | Physical DVD drives out of scope; images (ISO/CHD) and VIDEO_TS folders only. Drop the device read-ahead thread and drive tests from M7. | User decision (2026-10-16): ISOs and CHDs are what's used. | Accepted (2026-10-16) |
 | D-025 | Add a 'TV Display Type' option (16:9 / 4:3 Letterbox / 4:3 Pan & Scan) mirroring hardware players: sets SPRM 14, picks SPU variant, renders letterbox/pan-scan. Implemented as M6b before M7. | User request; also makes discs with display-mode-specific menus behave correctly. | Accepted (2026-10-16) |
  
 ---
