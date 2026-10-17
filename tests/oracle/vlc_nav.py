@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 FPS = 60000 / 1001
@@ -76,7 +77,23 @@ def run_vlc(iso, steps, end, frames):
         cmd += ["--vout=vdummy"]
     cmd.append("dvd://" + os.path.abspath(iso))
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True)
+                         stderr=subprocess.STDOUT, text=True, bufsize=1)
+    # Time the script from VLC's first disc event (First Play's VTS change,
+    # DeeVee's frame 0), not from process start: Flatpak start-up varies by
+    # seconds, more so right after a previous instance, and keys sent before
+    # a menu is up are dropped.
+    lines, started = [], threading.Event()
+
+    def reader():
+        for line in p.stdout:
+            lines.append(line)
+            if not started.is_set() and "DVDNAV_VTS_CHANGE" in line:
+                started.set()
+        started.set()
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    started.wait(timeout=60)
     t0 = time.time()
     for t, key in steps:
         time.sleep(max(0.0, t - (time.time() - t0)))
@@ -85,7 +102,9 @@ def run_vlc(iso, steps, end, frames):
     time.sleep(max(0.0, end - (time.time() - t0)))
     p.stdin.write("quit\n")
     p.stdin.flush()
-    log = p.communicate(timeout=30)[0]
+    p.wait(timeout=30)
+    th.join(timeout=10)
+    log = "".join(lines)
 
     events, cur, pending, hopping = [], None, {}, False
     for line in log.splitlines():

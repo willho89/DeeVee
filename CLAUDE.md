@@ -400,7 +400,7 @@ Re-check versions at the start of M0 and M7.
 ### VLC oracle gotchas (M6c, 2026-10-16)
 - Compare with `--no-dvdnav-menu`: VLC's default skips First Play (different start menu on TIMERIC).
 - `--vout=yuv` (frame capture) slows VLC below real time → traces cut short; use `--frames` only for short menu-only paths. vdummy runs at real time.
-- VLC's rc interface sometimes drops a key (worse under CPU load): its trace becomes a strict prefix of DeeVee's. `vlc_nav.py` retries those (ORACLE_RETRIES, default 2). Run only one oracle batch at a time; `ORACLE_OUT=<dir>` for a parallel one-off.
+- Time VLC key scripts from its first DVDNAV_VTS_CHANGE, not process start (vlc_nav.py does): Flatpak start-up varies by seconds, esp. right after a previous instance, and keys sent before a menu is up are dropped — the trace then looks like a strict prefix of DeeVee's. vlc_nav.py still retries such traces (ORACLE_RETRIES, default 2). `ORACLE_OUT=<dir>` for a parallel one-off.
 - VLC reports the new PGC's default button between HOP_CHANNEL and CELL_CHANGE; the parser ignores it.
 - Batch loops: give every child `</dev/null` (flatpak/distrobox eat stdin otherwise).
 - TIMERIC titles have bogus cell playback times (e.g. VTS 19: cell 0.2 s in a 71.8 s PGC); both players play by data, fine.
