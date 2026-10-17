@@ -70,9 +70,10 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 | Region / languages / CHD | ✅ Done |
 | Seek, pause, chapters, tracks, deinterlace, OSD | ✅ Done |
 | TV Display Type (16:9 / letterbox / pan & scan) | ✅ Done |
-| libdvdcss from the system folder | ✅ Linux · ⏳ Windows, macOS, Android untested |
+| libdvdcss from the system folder | ✅ Linux, Windows (tested under Wine) · ⏳ macOS, Android |
 | Linux x86_64 build | ✅ |
-| Windows, macOS, Android, ARM Linux builds | ⏳ Planned |
+| Windows x86_64 build | ✅ Cross-compiled; full test suite passes under Wine, real-Windows check pending |
+| macOS, Android, ARM Linux builds | ⏳ Planned |
 | Save states (resume points: position + the disc's own memory) | ✅ Done |
 | RetroArch "Restart" (starts the disc over) | ✅ Done |
 | README / docs page for docs.libretro.com | ⏳ This README; docs page planned |
@@ -94,6 +95,13 @@ cd DeeVee
 make -j8                     # libdvdcss built in (local/dev builds)
 make -j8 DEEVEE_CSS=dlopen   # distribution build: libdvdcss loaded from the system folder
 make check                   # headless test suite on generated fixture discs
+```
+
+Windows (cross-compiled from Linux with MinGW-w64; tests run under Wine):
+
+```sh
+make -j8 platform=win DEEVEE_CSS=dlopen   # -> deevee_libretro.dll
+make platform=win check
 ```
 
 The first `make` builds the dependencies (libdvdcss, libdvdread, libdvdnav, a minimal FFmpeg) as static libraries under `build/`. The core links only against libc. libdvdnav gets a small local patch from `patches/libdvdnav/`.

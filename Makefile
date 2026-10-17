@@ -4,6 +4,9 @@
 #   make DEEVEE_CSS=dlopen     libdvdread dlopen()s a user-supplied libdvdcss
 #   make DEEVEE_CSS=none       no CSS (CI / "missing library" path)
 #   make DEBUG=1               -O0 -g core build
+#   make platform=win          Windows x86_64 DLL; on Linux cross-compiles with
+#                              MinGW-w64 (CROSS=x86_64-w64-mingw32-), tests
+#                              run under Wine; build dir build/win64
 #
 # See CLAUDE.md §6 and decision D-003.
 
@@ -11,7 +14,6 @@
 
 TARGET_NAME   := deevee
 DEEVEE_CSS    ?= static
-BUILD_DIR     ?= build
 DEBUG         ?= 0
 
 ifeq ($(filter $(DEEVEE_CSS),static dlopen none),)
@@ -30,12 +32,31 @@ endif
 ifeq ($(platform),unix)
   TARGET  := $(TARGET_NAME)_libretro.so
   SHARED  := -shared -Wl,--version-script=link.T -Wl,--no-undefined
+  BUILD_DIR ?= build
+  HOST_LIBS := -ldl
 else ifeq ($(platform),osx)
   TARGET  := $(TARGET_NAME)_libretro.dylib
   SHARED  := -dynamiclib
+  BUILD_DIR ?= build/osx
 else ifeq ($(platform),win)
   TARGET  := $(TARGET_NAME)_libretro.dll
-  SHARED  := -shared -static-libgcc -Wl,--version-script=link.T
+  # Fully static (libgcc, winpthreads): the DLL needs only Windows' own DLLs.
+  SHARED  := -shared -static -static-libgcc -Wl,--version-script=link.T -Wl,--no-undefined
+  BUILD_DIR ?= build/win64
+  EXE     := .exe
+  ifneq ($(OS),Windows_NT)
+    # Cross from Linux. The -posix toolchain has the pthreads libdvdnav uses.
+    CROSS   ?= x86_64-w64-mingw32-
+    CC      := $(CROSS)gcc-posix
+    AR      := $(CROSS)ar
+    RUN     ?= WINEDEBUG=-all wine
+    CROSS_SYSTEM := windows
+    CROSS_CPU    := x86_64
+    FFMPEG_TARGET := --enable-cross-compile --cross-prefix=$(CROSS) --cc=$(CC) \
+                     --target-os=mingw32 --arch=x86_64
+  endif
+else
+  $(error unknown platform '$(platform)' (unix, osx, win))
 endif
 
 include Makefile.deps
@@ -106,12 +127,14 @@ distclean: clean
 .PHONY: all clean distclean
 
 # ---- tests -----------------------------------------------------------------
-HARNESS     := $(BUILD_DIR)/harness
-FIXTURE_DIR := $(BUILD_DIR)/fixtures
+HARNESS     := $(BUILD_DIR)/harness$(EXE)
+RUN_HARNESS := $(RUN) $(HARNESS)
+# Fixture discs are platform independent: one set for every build.
+FIXTURE_DIR := build/fixtures
 
 $(HARNESS): tests/harness.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c99 -Wall -Wextra -Wno-unused-parameter -O1 -g $(INCFLAGS) -o $@ $< -ldl
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-parameter -O1 -g $(INCFLAGS) -o $@ $< $(HOST_LIBS)
 
 harness: $(HARNESS)
 
@@ -134,39 +157,39 @@ fixture: $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
 check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
 	@mkdir -p $(BUILD_DIR)/system
-	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
-	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
-	$(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 600 $(BUILD_DIR)/system
-	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
-	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
-	HARNESS_OPT_deevee_subtitles=on $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/subs.iso 650 $(BUILD_DIR)/system
+	$(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
+	$(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
+	$(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 600 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_ac3.iso 1500 $(BUILD_DIR)/system
+	HARNESS_AVSYNC=1 HARNESS_OPT_deevee_deinterlace=off $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/avs_lpcm.iso 1500 $(BUILD_DIR)/system
+	HARNESS_OPT_deevee_subtitles=on $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/subs.iso 650 $(BUILD_DIR)/system
 	@echo "== CHD must match ISO (video hash, audio, A/V offset)"
 	@for f in avs_ac3 subs; do \
-	  a=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.iso 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
-	  b=$$(HARNESS_AVSYNC=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.chd 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
+	  a=$$(HARNESS_AVSYNC=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.iso 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
+	  b=$$(HARNESS_AVSYNC=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/$$f.chd 900 $(BUILD_DIR)/system 2>/dev/null | grep -E '^frames:|offset ms'); \
 	  if [ "$$a" = "$$b" ]; then echo "   $$f: CHD == ISO"; else echo "   $$f: CHD != ISO"; exit 1; fi; done
 	@echo "== TV Display Type: 16:9 picture -> 4:3 output on a 4:3 TV"
 	@for m in 16:9:1.7778 4:3_letterbox:1.3333 4:3_panscan:1.3333; do \
 	  opt=$${m%:*}; want=$${m##*:}; \
-	  HARNESS_OPT_deevee_tv_display=$$opt $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 120 $(BUILD_DIR)/system 2>/dev/null \
+	  HARNESS_OPT_deevee_tv_display=$$opt $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/pal169.iso 120 $(BUILD_DIR)/system 2>/dev/null \
 	    | grep -q "^av: 720x576 .*aspect $$want" && echo "   $$opt -> $$want (ok)" || { echo "   $$opt: expected aspect $$want"; exit 1; }; done
 	@echo "== Encrypted data that can't be decrypted: alert once, halt (no End of Disc loop)"
-	@out=$$(HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/scrambled.iso 300 $(BUILD_DIR)/system 2>&1); \
+	@out=$$(HARNESS_DEBUG=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/scrambled.iso 300 $(BUILD_DIR)/system 2>&1); \
 	  echo "$$out" | grep -q "OSD: This disc is encrypted" && ! echo "$$out" | grep -q "End of disc" \
-	  && echo "$$out" | grep -q "scrambled 1$$" && echo "   scrambled.iso: alert + halt (ok)" \
+	  && echo "$$out" | grep -qE "scrambled 1[^0-9]*$$" && echo "   scrambled.iso: alert + halt (ok)" \
 	  || { echo "   scrambled.iso: FAILED"; exit 1; }
 	@echo "== Save state: resume point in a new session lands on the saved picture; Restart re-runs First Play"
 	@HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_SAVE=400 HARNESS_DUMP=$(BUILD_DIR)/state-a HARNESS_DUMP_FRAMES=520 \
-	  $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 521 $(BUILD_DIR)/system 2>/dev/null | grep -q "serialize at frame 400: ok" \
+	  $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 521 $(BUILD_DIR)/system 2>/dev/null | grep -q "serialize at frame 400: ok" \
 	  && out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/check.state HARNESS_LOAD=0 \
-	    $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 200 $(BUILD_DIR)/system 2>&1) \
+	    $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 200 $(BUILD_DIR)/system 2>&1) \
 	  && echo "$$out" | grep -q "unserialize at frame 0: ok" && echo "$$out" | grep -q "Resumed from save state" \
 	  && echo "   save/load (ok)" || { echo "   save/load: FAILED"; exit 1; }
-	@out=$$(HARNESS_DEBUG=1 HARNESS_RESET=300 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 330 $(BUILD_DIR)/system 2>&1); \
+	@out=$$(HARNESS_DEBUG=1 HARNESS_RESET=300 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 330 $(BUILD_DIR)/system 2>&1); \
 	  echo "$$out" | grep -q "OSD: Restarting disc" && echo "   reset (ok)" || { echo "   reset: FAILED"; exit 1; }
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"
-	@HARNESS_DEBUG=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
-	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
+	@HARNESS_DEBUG=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 1 " && echo "   auto -> title 1 (ok)"
+	@HARNESS_DEBUG=1 HARNESS_OPT_deevee_region=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/region2.iso 60 $(BUILD_DIR)/system 2>&1 | grep -q "cell change: title 2 " && echo "   forced 1 -> title 2 (ok)"
 
 # Regression checks on the local, uncommitted TestISOs/ (skipped if absent).
 # Menu cases found against VLC in M6c (tests/oracle/).
@@ -174,21 +197,21 @@ TIMERIC := TestISOs/TIMERIC.iso
 check-discs: $(TARGET) $(HARNESS)
 	@if [ ! -f $(TIMERIC) ]; then echo "== $(TIMERIC) not found, skipping"; exit 0; fi; \
 	echo "== TIMERIC: sub-menu after activation shows its menu SPU + highlight (WAIT -> still)"; \
-	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:RIGHT,959:A" $(HARNESS) ./$(TARGET) $(TIMERIC) 1100 $(BUILD_DIR)/system 2>&1); \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:RIGHT,959:A" $(RUN_HARNESS) ./$(TARGET) $(TIMERIC) 1100 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f9[6-9][0-9] .*spu: show' && echo "$$out" | grep -qE '^\[f9[5-9][0-9] .*highlight: button 1 ' \
 	  && echo "   More Shorts menu highlighted (ok)" || { echo "   More Shorts menu: FAILED"; exit 1; }; \
 	echo "== TIMERIC: menu reached when a short ends is highlighted (held-clock PCI)"; \
-	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" $(HARNESS) ./$(TARGET) $(TIMERIC) 6300 $(BUILD_DIR)/system 2>&1); \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" $(RUN_HARNESS) ./$(TARGET) $(TIMERIC) 6300 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f6[01][0-9][0-9] .*highlight: button 1 ' \
 	  && echo "   Field Day menu after 'Meet Campy!' highlighted (ok)" || { echo "   return menu: FAILED"; exit 1; }; \
 	echo "== TIMERIC: moving onto an auto-action button follows its jump (photo gallery)"; \
-	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:UP,959:A,1319:RIGHT,1678:RIGHT" $(HARNESS) ./$(TARGET) $(TIMERIC) 1800 $(BUILD_DIR)/system 2>&1); \
+	out=$$(HARNESS_DEBUG=1 HARNESS_INPUT="839:UP,959:A,1319:RIGHT,1678:RIGHT" $(RUN_HARNESS) ./$(TARGET) $(TIMERIC) 1800 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f1678 .*navstate: cellN=1 pgN=1 pgc_length=36000' \
 	  && echo "   gallery page 2 -> 3 (ok)" || { echo "   auto-action move: FAILED"; exit 1; }; \
 	echo "== TIMERIC: state saved mid-short resumes and returns to the same menu/button (disc registers kept)"; \
 	HARNESS_STATE=$(BUILD_DIR)/timeric.state HARNESS_SAVE=3000 HARNESS_INPUT="839:DOWN,959:A,1319:LEFT,1439:A,1798:A" \
-	  $(HARNESS) ./$(TARGET) $(TIMERIC) 3001 $(BUILD_DIR)/system >/dev/null 2>&1; \
-	out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/timeric.state HARNESS_LOAD=0 $(HARNESS) ./$(TARGET) $(TIMERIC) 3200 $(BUILD_DIR)/system 2>&1); \
+	  $(RUN_HARNESS) ./$(TARGET) $(TIMERIC) 3001 $(BUILD_DIR)/system >/dev/null 2>&1; \
+	out=$$(HARNESS_DEBUG=1 HARNESS_STATE=$(BUILD_DIR)/timeric.state HARNESS_LOAD=0 $(RUN_HARNESS) ./$(TARGET) $(TIMERIC) 3200 $(BUILD_DIR)/system 2>&1); \
 	echo "$$out" | grep -qE '^\[f30[5-9][0-9] .*VTS 19 -> 19 \(domain 4\)' && echo "$$out" | grep -qE '^\[f3[01][0-9][0-9] .*highlight: button 1 ' \
 	  && echo "   resume mid-short -> Field Day menu, button 1 (ok)" || { echo "   resume mid-short: FAILED"; exit 1; }
 

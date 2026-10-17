@@ -34,13 +34,25 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
-#include <dlfcn.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+/* Windows build (platform=win, run under Wine): LoadLibrary as dlopen. */
+#include <windows.h>
+#define RTLD_NOW   0
+#define RTLD_LOCAL 0
+static void *dlopen(const char *path, int flags) { (void)flags; return (void *)LoadLibraryA(path); }
+static void *dlsym(void *lib, const char *sym) { return (void *)(intptr_t)GetProcAddress((HMODULE)lib, sym); }
+static int dlclose(void *lib) { return FreeLibrary((HMODULE)lib) ? 0 : -1; }
+static const char *dlerror(void) { static char buf[64]; snprintf(buf, sizeof(buf), "LoadLibrary error %lu", GetLastError()); return buf; }
+#else
+#include <dlfcn.h>
+#endif
 
 #include <libretro.h>
 

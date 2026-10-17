@@ -11,9 +11,19 @@ FFMPEG_PREFIX := $(abspath $(FFMPEG_BUILD)/prefix)
 
 MESON         ?= meson
 NINJA         ?= ninja
+MESON_CROSS_FILE := $(abspath $(BUILD_DIR)/meson-cross.ini)
 MESON_COMMON  := --buildtype=release --default-library=static \
                  -Db_staticpic=true --libdir=lib --prefix=$(DVD_PREFIX) \
-                 -Denable_docs=false
+                 -Denable_docs=false $(if $(CROSS_SYSTEM),--cross-file $(MESON_CROSS_FILE))
+
+# Meson cross file for the CROSS toolchain (platform=win from Linux, ...).
+$(MESON_CROSS_FILE):
+	@mkdir -p $(dir $@)
+	printf '%s\n' "[binaries]" "c = '$(CC)'" "ar = '$(AR)'" "strip = '$(CROSS)strip'" \
+	  "windres = '$(CROSS)windres'" "pkg-config = 'pkg-config'" \
+	  "[host_machine]" "system = '$(CROSS_SYSTEM)'" "cpu_family = '$(CROSS_CPU)'" \
+	  "cpu = '$(CROSS_CPU)'" "endian = 'little'" > $@
+CROSS_FILE_DEP := $(if $(CROSS_SYSTEM),$(MESON_CROSS_FILE))
 
 # libdvdread's 'libdvdcss' feature: enabled = link directly (we build it),
 # disabled = libdvdread dlopen()s libdvdcss at runtime if present.
@@ -28,13 +38,13 @@ endif
 DEPS_PKG_CONFIG_PATH := $(DVD_PREFIX)/lib/pkgconfig:$(FFMPEG_PREFIX)/lib/pkgconfig
 DEPS_ENV := PKG_CONFIG_PATH=$(DEPS_PKG_CONFIG_PATH) PKG_CONFIG_LIBDIR=$(DEPS_PKG_CONFIG_PATH)
 
-$(DVD_BUILD)/.libdvdcss.stamp:
+$(DVD_BUILD)/.libdvdcss.stamp: $(CROSS_FILE_DEP)
 	@mkdir -p $(DVD_BUILD)
 	$(MESON) setup --reconfigure $(DVD_BUILD)/libdvdcss $(DEPS_DIR)/libdvdcss $(MESON_COMMON)
 	$(NINJA) -C $(DVD_BUILD)/libdvdcss install
 	@touch $@
 
-$(DVD_BUILD)/.libdvdread.stamp: $(DVDCSS_STAMP)
+$(DVD_BUILD)/.libdvdread.stamp: $(DVDCSS_STAMP) $(CROSS_FILE_DEP)
 	@mkdir -p $(DVD_BUILD)
 	$(DEPS_ENV) $(MESON) setup --reconfigure $(DVD_BUILD)/libdvdread $(DEPS_DIR)/libdvdread \
 		$(MESON_COMMON) $(DVDREAD_CSS_OPT)
@@ -60,7 +70,7 @@ $(DVD_BUILD)/.libdvdnav.stamp: $(DVD_BUILD)/.libdvdread.stamp $(DVD_BUILD)/.libd
 	$(NINJA) -C $(DVD_BUILD)/libdvdnav install
 	@touch $@
 
-FFMPEG_CONFIGURE := --prefix=$(FFMPEG_PREFIX) --enable-static --disable-shared --enable-pic \
+FFMPEG_CONFIGURE := --prefix=$(FFMPEG_PREFIX) --enable-static --disable-shared --enable-pic $(FFMPEG_TARGET) \
 	--disable-everything --disable-programs --disable-doc --disable-network \
 	--disable-autodetect --disable-avdevice --disable-avformat \
 	--enable-avcodec --enable-swscale --enable-swresample \
