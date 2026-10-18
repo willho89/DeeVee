@@ -74,7 +74,7 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 | Region / languages / CHD | ✅ Done |
 | Seek, pause, chapters, tracks, deinterlace, OSD | ✅ Done |
 | TV Display Type (16:9 / letterbox / pan & scan) | ✅ Done |
-| libdvdcss from the system folder | ✅ Linux, Windows (Wine), macOS (CI) · Android written, untested |
+| libdvdcss from the system folder | ✅ Linux (verified on a real CSS-encrypted disc image), Windows (Wine), macOS (CI) · Android written, untested |
 | Linux x86_64 build | ✅ |
 | Windows x86_64 build | ✅ Cross-compiled; full test suite passes under Wine, real-Windows check pending |
 | Linux arm64 / armhf (Raspberry Pi etc.) | ✅ Cross-compiled; full test suite passes under QEMU, real-device check pending |
@@ -85,7 +85,7 @@ Mouse and touch: hover selects a menu button and click/tap activates it.
 | README / docs page for docs.libretro.com | ⏳ This README; docs page planned |
 | Closed captions, `CHG_COLCON`, DVD-VR, karaoke | 💤 Later |
 
-**Not yet verified:** CSS decryption on a genuinely encrypted image, real PAL discs, multi-angle discs, and discs with per-TV-type menus. Reports are welcome.
+**Not yet verified:** real PAL discs, multi-angle discs, and discs with per-TV-type menus. Reports are welcome.
 
 **Out of scope:** physical DVD drives, Blu-ray, DVD-Audio.
 
