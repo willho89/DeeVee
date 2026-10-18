@@ -363,6 +363,39 @@ static void on_nav_packet(dv_ctx_t *ctx)
    }
 }
 
+/* A read error mid-title is almost always a damaged disc (disc rot leaves
+ * zero-filled sectors in a ddrescue image): a lost NAV pack gives "Expected
+ * NAV packet but none found". Skip forward to the next VOBU in the IFO's
+ * VOBU address map instead of treating it as end of disc. A forward
+ * sector_search snaps to the first VOBU after the current one; the step
+ * grows on repeated failures in case libdvdnav's position is still short
+ * of the damaged VOBU. Queued content keeps playing; the HOP_CHANNEL that
+ * follows re-anchors the clock (D-010). */
+static bool skip_damaged_vobu(dv_ctx_t *ctx)
+{
+   dv_nav_t *nav = &ctx->nav;
+   int32_t step;
+
+   dv_log(ctx, RETRO_LOG_WARN, "dvdnav: get_next_block: %s\n",
+          dvdnav_err_to_string(nav->dvdnav));
+   if (nav->read_errors >= 8)
+   {
+      dv_log(ctx, RETRO_LOG_ERROR, "dvdnav: giving up after %d read errors\n",
+             nav->read_errors);
+      return false;
+   }
+   step = nav->read_errors ? 1 << (2 * nav->read_errors + 2) : 1;  /* 1, 16, 64, ... 64Ki */
+   nav->read_errors++;
+   if (dvdnav_sector_search(nav->dvdnav, step, SEEK_CUR) != DVDNAV_STATUS_OK)
+   {
+      dv_log(ctx, RETRO_LOG_ERROR, "dvdnav: can't skip damaged sectors: %s\n",
+             dvdnav_err_to_string(nav->dvdnav));
+      return false;
+   }
+   dv_log(ctx, RETRO_LOG_WARN, "dvdnav: skipped damaged sectors (+%d)\n", (int)step);
+   return true;
+}
+
 /* Ported from VLC modules/access/dvdnav.c Demux() event switch
  * @ 843607a066be, on the libdvdnav examples/menus.c loop skeleton. */
 void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
@@ -389,10 +422,12 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
 
       if (dvdnav_get_next_cache_block(nav->dvdnav, &buf, &event, &len) != DVDNAV_STATUS_OK)
       {
-         dv_log(ctx, RETRO_LOG_ERROR, "dvdnav: get_next_block: %s\n",
-                dvdnav_err_to_string(nav->dvdnav));
-         nav->stopped = true;
-         return;
+         if (!skip_damaged_vobu(ctx))
+         {
+            nav->stopped = true;
+            return;
+         }
+         continue;
       }
 
       if (event != DVDNAV_BLOCK_OK && event != DVDNAV_NAV_PACKET && event != DVDNAV_NOP)
@@ -412,6 +447,7 @@ void dv_nav_fill(dv_ctx_t *ctx, int max_blocks)
             break;
 
          case DVDNAV_NAV_PACKET:
+            nav->read_errors = 0;
             on_nav_packet(ctx);
             dv_ps_demux(ctx, buf, (size_t)len);
             break;

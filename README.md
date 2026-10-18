@@ -20,6 +20,7 @@ It's built on [libdvdnav](https://code.videolan.org/videolan/libdvdnav) / [libdv
 - **Audio:** AC-3, DTS, LPCM and MPEG audio, downmixed to stereo or Dolby Pro Logic II, with optional dynamic range compression (night mode).
 - **Subtitles:** on, off or disc default, preferred language, and forced subtitles always shown.
 - **Controls during playback:** seek, pause, chapter skip, hold-to-scan, audio/subtitle/angle cycling and an info OSD.
+- **Damaged discs:** an image with unreadable sectors (e.g. from rescuing a disc with disc rot) skips past the damaged part and keeps playing instead of starting the disc over.
 - **Encrypted discs:** optional. Decrypted rips (e.g. MakeMKV ISOs) need nothing extra. CSS-encrypted images need `libdvdcss` in RetroArch's system folder (see below).
 
 ## Installing

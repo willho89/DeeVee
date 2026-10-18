@@ -217,10 +217,13 @@ $(FIXTURE_DIR)/%.chd: $(FIXTURE_DIR)/%.iso
 $(FIXTURE_DIR)/scrambled.iso: $(FIXTURE_DIR)/ntsc43.iso tests/fixtures/scramble.py
 	python3 tests/fixtures/scramble.py $< $@
 
-fixture: $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
+$(FIXTURE_DIR)/damaged.iso: $(FIXTURE_DIR)/ntsc43.iso tests/fixtures/damage.py
+	python3 tests/fixtures/damage.py $< $@ >/dev/null
+
+fixture: $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso $(FIXTURE_DIR)/damaged.iso
 
 # M0 smoke test: ISO (stream callbacks) and VIDEO_TS folder (path open).
-check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso
+check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled.iso $(FIXTURE_DIR)/damaged.iso
 	@mkdir -p $(BUILD_DIR)/system
 	$(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso 600 $(BUILD_DIR)/system
 	$(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/ntsc43/VIDEO_TS/VIDEO_TS.IFO 600 $(BUILD_DIR)/system
@@ -243,6 +246,11 @@ check: $(TARGET) $(HARNESS) $(FIXTURES) $(CHD_FIXTURES) $(FIXTURE_DIR)/scrambled
 	  echo "$$out" | grep -q "OSD: This disc is encrypted" && ! echo "$$out" | grep -q "End of disc" \
 	  && echo "$$out" | grep -qE "scrambled 1[^0-9]*$$" && echo "   scrambled.iso: alert + halt (ok)" \
 	  || { echo "   scrambled.iso: FAILED"; exit 1; }
+	@echo "== Damaged disc (zeroed NAV pack mid-title): skip to the next VOBU, no End of Disc restart"
+	@out=$$(HARNESS_DEBUG=1 $(RUN_HARNESS) ./$(TARGET) $(FIXTURE_DIR)/damaged.iso 600 $(BUILD_DIR)/system 2>&1); \
+	  echo "$$out" | grep -q "skipped damaged sectors" && ! echo "$$out" | grep -q "End of disc" \
+	  && echo "   damaged.iso: skipped, kept playing (ok)" \
+	  || { echo "   damaged.iso: FAILED"; exit 1; }
 	@echo "== Save state: resume point in a new session lands on the saved picture; Restart re-runs First Play"
 	@sh tests/check_state.sh "$(RUN_HARNESS)" ./$(TARGET) $(FIXTURE_DIR)/ntsc43.iso $(BUILD_DIR)/system
 	@echo "== Region: auto passes the disc's region check, forced region 1 fails it"

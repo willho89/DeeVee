@@ -24,7 +24,7 @@
 #include "dv_overlay.h"
 #include "dv_input.h"
 
-#define DV_VERSION "0.6.0"
+#define DV_VERSION "0.6.1"
 
 #ifndef DEEVEE_CSS_MODE
 #define DEEVEE_CSS_MODE "unknown"

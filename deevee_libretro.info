@@ -6,7 +6,7 @@ corename = "DeeVee"
 categories = "Media Player"
 license = "GPLv2+"
 permissions = ""
-display_version = "0.6.0"
+display_version = "0.6.1"
 
 # Hardware Information
 manufacturer = "N/A"

@@ -87,6 +87,7 @@ typedef struct dv_nav
    btni_t   logged_btnit[36];
 
    bool     stopped;          /* DVDNAV_STOP seen */
+   int      read_errors;      /* consecutive get_next_block errors (damaged VOBU skip) */
    uint32_t blocks;           /* BLOCK_OK packs received (stats) */
    uint32_t stills, waits, hops, discontinuities;
 } dv_nav_t;
