@@ -332,7 +332,7 @@ static void enqueue(dv_ctx_t *ctx, AVFrame *src)
    duration    = frame_duration(v, src);
    v->next_pts = pts + duration;
 
-   if (v->deint != DV_DEINT_OFF)
+   if (v->deint != DV_DEINT_OFF && v->deint != DV_DEINT_CRT)
    {
       if (v->graph && (src->width != v->graph_w || src->height != v->graph_h ||
                        src->format != v->graph_fmt))

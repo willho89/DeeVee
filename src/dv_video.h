@@ -31,7 +31,9 @@ typedef enum
    DV_DEINT_OFF = 0,
    DV_DEINT_YADIF,       /* frame rate (one picture per frame) */
    DV_DEINT_YADIF_2X,    /* field rate */
-   DV_DEINT_BWDIF_2X     /* field rate, sharper */
+   DV_DEINT_BWDIF_2X,    /* field rate, sharper */
+   DV_DEINT_CRT          /* no deinterlacing: libretro.c sends one field per tick
+                            to a CRT frontend (VRT field extension) */
 } dv_deint_t;
 
 #define DV_VIDEO_QUEUE_MAX 16    /* decoded frames */

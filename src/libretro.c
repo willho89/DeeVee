@@ -16,6 +16,7 @@
 #include <libavcodec/avcodec.h>
 
 #include "dv_ctx.h"
+#include "vrt_libretro_ext.h"
 
 #define DV_SAMPLE_RATE  48000
 #define DV_FPS_NTSC     (60000.0 / 1001.0)
@@ -38,6 +39,9 @@ static retro_log_printf_t         log_cb;
 
 static dv_ctx_t *g_ctx;
 static bool      g_can_dupe;
+/* VRT field extension (vrt_libretro_ext.h): the frontend draws fields. */
+static bool      g_vrt_fields;
+static unsigned  g_field = VRT_FIELD_TOP;   /* parity sent on the last tick */
 
 /* What the frontend currently believes. */
 static struct retro_system_av_info g_av;
@@ -152,11 +156,14 @@ static struct retro_core_option_v2_definition g_opt_defs[] = {
    {
       "deevee_deinterlace", "Deinterlace", NULL,
       "Applied only to pictures flagged as interlaced; film is untouched. Field-rate modes "
-      "show every field (smooth motion on video-shot content).",
+      "show every field (smooth motion on video-shot content). 'CRT field output' sends "
+      "each field on its own, for frontends that draw interlace like a real tube (VRT); "
+      "'Auto' uses it when the frontend supports it, otherwise Bwdif.",
       NULL, "video",
-      { { "bwdif2x", "Bwdif, field rate" }, { "yadif2x", "Yadif, field rate" },
-        { "yadif", "Yadif, frame rate" }, { "off", "Off" }, { NULL, NULL } },
-      "bwdif2x"
+      { { "auto", "Auto" }, { "bwdif2x", "Bwdif, field rate" }, { "yadif2x", "Yadif, field rate" },
+        { "yadif", "Yadif, frame rate" }, { "crt", "CRT field output" }, { "off", "Off" },
+        { NULL, NULL } },
+      "auto"
    },
    {
       "deevee_aspect", "Aspect Ratio", NULL,
@@ -314,7 +321,8 @@ static void apply_options(dv_ctx_t *ctx, const dv_options_t *old)
                old->sub_lang[1] != ctx->opt.sub_lang[1] ||
                old->subtitles != ctx->opt.subtitles))
       dv_nav_apply_title_options(ctx, true);
-   if (old && (old->aspect != ctx->opt.aspect || old->tv_display != ctx->opt.tv_display))
+   if (old && (old->aspect != ctx->opt.aspect || old->tv_display != ctx->opt.tv_display ||
+               old->deint != ctx->opt.deint))   /* field output halves the height */
       g_av.geometry.aspect_ratio = 0;   /* force a geometry update */
    if (old && old->tv_display != ctx->opt.tv_display)
       dv_nav_apply_display(ctx);
@@ -345,7 +353,10 @@ static bool read_options(dv_ctx_t *ctx)
    v = get_option("deevee_deinterlace");
    o.deint = (v && !strcmp(v, "off"))     ? DV_DEINT_OFF :
              (v && !strcmp(v, "yadif"))   ? DV_DEINT_YADIF :
-             (v && !strcmp(v, "yadif2x")) ? DV_DEINT_YADIF_2X : DV_DEINT_BWDIF_2X;
+             (v && !strcmp(v, "yadif2x")) ? DV_DEINT_YADIF_2X :
+             (v && !strcmp(v, "bwdif2x")) ? DV_DEINT_BWDIF_2X :
+             g_vrt_fields                 ? DV_DEINT_CRT :   /* auto, or crt */
+                                            DV_DEINT_BWDIF_2X;
    v = get_option("deevee_aspect");
    o.aspect = (v && !strcmp(v, "4:3")) ? 1 : (v && !strcmp(v, "16:9")) ? 2 : 0;
    v = get_option("deevee_tv_display");
@@ -434,6 +445,33 @@ static double content_fps(const dv_ctx_t *ctx)
    return DV_FPS_NTSC;
 }
 
+static bool field_output(const dv_ctx_t *ctx)
+{
+   return ctx->opt.deint == DV_DEINT_CRT;
+}
+
+/* CRT field output: one field of the composed frame per tick. A newly
+ * presented picture starts on the field its flags say comes first; after
+ * that parity alternates, which reproduces 3:2 pulldown from the RFF-driven
+ * hold times (3, 2, 3, 2 ticks) and keeps stills and pause interlacing. */
+static void send_field(dv_ctx_t *ctx, const uint32_t *frame, bool new_picture)
+{
+   const dv_render_t *r = &ctx->render;
+   struct vrt_video_field vf;
+   const AVFrame *f = ctx->video.current.frame;
+
+   if (new_picture && f)
+      g_field = (f->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? VRT_FIELD_TOP : VRT_FIELD_BOTTOM;
+   else
+      g_field = g_field == VRT_FIELD_TOP ? VRT_FIELD_BOTTOM : VRT_FIELD_TOP;
+
+   vf.field       = g_field;
+   vf.frame_lines = r->height;
+   environ_cb(VRT_ENVIRONMENT_SET_VIDEO_FIELD, &vf);
+   video_cb(frame + (g_field == VRT_FIELD_BOTTOM ? r->width : 0), r->width, r->height / 2,
+            r->width * sizeof(uint32_t) * 2);
+}
+
 /* Tell the frontend about geometry/timing changes of the rendered picture. */
 static void update_av_info(dv_ctx_t *ctx)
 {
@@ -441,20 +479,21 @@ static void update_av_info(dv_ctx_t *ctx)
    double fps = content_fps(ctx);
    double dar = dv_render_output_dar(ctx);
    bool timing   = fps != g_av.timing.fps;
+   unsigned height = field_output(ctx) ? r->height / 2 : r->height;
    bool geometry = r->width  != g_av.geometry.base_width ||
-                   r->height != g_av.geometry.base_height ||
+                   height    != g_av.geometry.base_height ||
                    fabs(dar - g_av.geometry.aspect_ratio) > 0.001;
 
    if (!timing && !geometry)
       return;
 
    g_av.geometry.base_width   = r->width;
-   g_av.geometry.base_height  = r->height;
+   g_av.geometry.base_height  = height;
    g_av.geometry.aspect_ratio = (float)dar;
    g_av.timing.fps            = fps;
 
-   dv_log(ctx, RETRO_LOG_INFO, "Output: %ux%u, aspect %.4f, %.3f Hz\n",
-          r->width, r->height, dar, fps);
+   dv_log(ctx, RETRO_LOG_INFO, "Output: %ux%u%s, aspect %.4f, %.3f Hz\n",
+          r->width, height, field_output(ctx) ? " fields" : "", dar, fps);
 
    if (timing)
    {
@@ -550,6 +589,7 @@ RETRO_API void retro_run(void)
    {
       const dv_subpic_t *sp = dv_spu_update(ctx);
       bool redraw = ctx->spu.changed;
+      bool new_picture = ctx->video.current_new;
 
       if (ctx->video.current_new)
       {
@@ -595,8 +635,13 @@ RETRO_API void retro_run(void)
             }
          }
          g_last_frame = frame;
-         video_cb(frame, r->width, r->height, r->width * sizeof(uint32_t));
+         if (field_output(ctx))
+            send_field(ctx, frame, new_picture);
+         else
+            video_cb(frame, r->width, r->height, r->width * sizeof(uint32_t));
       }
+      else if (field_output(ctx) && r->valid)
+         send_field(ctx, g_last_frame ? g_last_frame : r->buf, false);
       else if (g_can_dupe && r->valid)
          video_cb(NULL, r->width, r->height, r->width * sizeof(uint32_t));
       else
@@ -615,6 +660,10 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
 
    if (!game || !game->path)
       return false;
+
+   /* Probe (NULL data) for VRT's field output; other frontends say no. */
+   g_vrt_fields = environ_cb(VRT_ENVIRONMENT_SET_VIDEO_FIELD, NULL);
+   g_field = VRT_FIELD_TOP;
 
    if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt))
    {
